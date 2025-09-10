@@ -36,7 +36,8 @@ async def resolve_uuid_from_url(url: str, max_redirects: int = 10) -> str:
             if status in {301, 302} and not location:
                 raise ValueError("⚠️ Редирект без location")
             if not location:
-                break
+                # 🚨 здесь раньше был break → заменяем на ошибку
+                raise ValueError(f"❌ UUID не найден: {current_url}")
 
             next_url = (
                 location if location.startswith("http") or location.startswith("tg://")

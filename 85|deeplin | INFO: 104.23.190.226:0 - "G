@@ -1,0 +1,99 @@
+85|deeplin | INFO:     104.23.190.226:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '6013629064'}
+85|deeplin | [POSTBACK] user_id: '6013629064' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 6013629064 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 6013629064
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.69.150.155:0 - "GET /postback/?user_id=6013629064 HTTP/1.0" 200 OK
+85|deeplin | INFO:     196.251.117.38:0 - "GET /.env HTTP/1.0" 404 Not Found
+
+85|deeplin | INFO:     172.70.115.182:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+
+85|deeplin | INFO:     172.70.230.140:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '7939160539'}
+85|deeplin | [POSTBACK] user_id: '7939160539' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 7939160539 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 7939160539
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.70.240.29:0 - "GET /postback/?user_id=7939160539 HTTP/1.0" 200 OK
+85|deeplin | INFO:     104.23.190.227:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '942307386'}
+85|deeplin | [POSTBACK] user_id: '942307386' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 942307386 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 942307386
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.69.150.154:0 - "GET /postback/?user_id=942307386 HTTP/1.0" 200 OK
+85|deeplin | INFO:     162.158.154.141:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '1303801454'}
+85|deeplin | [POSTBACK] user_id: '1303801454' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 1303801454 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 1303801454
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.71.164.27:0 - "GET /postback/?user_id=1303801454 HTTP/1.0" 200 OK
+85|deeplin | INFO:     20.172.67.176:0 - "GET /ecp/Current/exporttool/microsoft.exchange.ediscovery.exporttool.application HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /dns-query?dns=m70BAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /dns-query HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /dns-query?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /dns-query?dns=xiUBAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /dns-query HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /dns-query?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /query?dns=nOYBAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /query HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /query?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /query?dns=SnIBAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /query HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /query?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /resolve?dns=e6UBAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /resolve HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /resolve?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /resolve?dns=cF0BAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "POST /resolve HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     8.208.10.94:0 - "GET /resolve?name=example.com&type=A HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     162.158.154.141:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '1312006214'}
+85|deeplin | [POSTBACK] user_id: '1312006214' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 1312006214 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 1312006214
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     162.158.95.205:0 - "GET /postback/?user_id=1312006214 HTTP/1.0" 200 OK
+85|deeplin | INFO:     162.158.154.140:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '5375849408'}
+85|deeplin | [POSTBACK] user_id: '5375849408' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 5375849408 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 5375849408
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.70.246.80:0 - "GET /postback/?user_id=5375849408 HTTP/1.0" 200 OK
+85|deeplin | INFO:     147.185.132.58:64350 - "GET / HTTP/1.1" 404 Not Found
+85|deeplin | INFO:     172.71.203.9:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '6633894788'}
+85|deeplin | [POSTBACK] user_id: '6633894788' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 6633894788 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 6633894788
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.70.248.28:0 - "GET /postback/?user_id=6633894788 HTTP/1.0" 200 OK
+85|deeplin | INFO:     172.70.115.181:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '5234539473'}
+85|deeplin | [POSTBACK] user_id: '5234539473' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 5234539473 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 5234539473
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.71.172.219:0 - "GET /postback/?user_id=5234539473 HTTP/1.0" 200 OK
+85|deeplin | INFO:     104.23.223.108:0 - "GET /wp-admin/setup-config.php HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     172.71.184.132:0 - "GET /wordpress/wp-admin/setup-config.php HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     104.23.221.109:0 - "GET /wp-admin/setup-config.php HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     104.23.223.109:0 - "GET /wordpress/wp-admin/setup-config.php HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     172.70.254.62:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '2039351151'}
+85|deeplin | [POSTBACK] user_id: '2039351151' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 2039351151 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 2039351151
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.69.150.154:0 - "GET /postback/?user_id=2039351151 HTTP/1.0" 200 OK
+85|deeplin | INFO:     79.124.58.198:0 - "GET /actuator/gateway/routes HTTP/1.0" 404 Not Found
+85|deeplin | INFO:     104.23.187.242:0 - "GET /resolve/uuid?url=https://thedinator.com/tracker/spots/redirect/snFQOTHN?pixel=111 HTTP/1.0" 200 OK
+85|deeplin | [POSTBACK] Получены данные: {'user_id': '6843527621'}
+85|deeplin | [POSTBACK] user_id: '6843527621' (тип: <class 'str'>), action: None
+85|deeplin | [POSTBACK] Преобразованный user_id: 6843527621 (тип: <class 'int'>)
+85|deeplin | [POSTBACK] Устанавливаем статус 1 для пользователя 6843527621
+85|deeplin | [POSTBACK] Exception: connection already closed
+85|deeplin | INFO:     172.70.243.99:0 - "GET /postback/?user_id=6843527621 HTTP/1.0" 200 OK
