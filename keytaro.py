@@ -7,17 +7,16 @@ import logging
 from datetime import datetime, timedelta
 from db import DataBase
 
-
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-campaign_router = APIRouter()
 db = DataBase()
 
-# Конфигурация - очень консервативные значения
-KEITARO_DOMAIN = "https://your-keitaro-domain.com"
-KEITARO_ADMIN_API_KEY = "your-admin-api-key"
+# ВАЖНО: ЗАМЕНИТЕ НА ВАШИ РЕАЛЬНЫЕ ДАННЫЕ!
+KEITARO_DOMAIN = "https://your-keitaro-domain.com"  # ← ЗАМЕНИТЕ НА ВАШ ДОМЕН
+KEITARO_ADMIN_API_KEY = "your-admin-api-key"        # ← ЗАМЕНИТЕ НА ВАШ API КЛЮЧ
+
 MAX_USERS_PER_SECOND = 2  # Максимум 2 пользователя в секунду
 DELAY_BETWEEN_REQUESTS = 0.5  # 0.5 секунды между запросами (2 в секунду)
 BATCH_SIZE = 10  # Маленькие батчи для API
@@ -280,6 +279,33 @@ async def start_campaign_service():
                 await asyncio.sleep(60)  # Пауза минута при ошибке
 
 
+async def stop_campaign_service():
+    """
+    Остановка сервиса
+    """
+    global campaign_service
+    if campaign_service:
+        campaign_service.is_running = False
+        logger.info("Сервис синхронизации остановлен")
+
+
+async def startup_event():
+    """
+    Вызывается при старте FastAPI приложения
+    """
+    asyncio.create_task(start_campaign_service())
+
+
+async def shutdown_event():
+    """
+    Вызывается при остановке FastAPI приложения  
+    """
+    await stop_campaign_service()
+
+# FastAPI роутер для эндпоинтов
+campaign_router = APIRouter()
+
+
 @campaign_router.post("/campaigns/sync-start")
 async def manual_startup_sync(background_tasks: BackgroundTasks):
     """
@@ -325,27 +351,3 @@ async def stop_sync():
     """
     await stop_campaign_service()
     return {"status": "stopped", "message": "Синхронизация остановлена"}
-
-
-async def stop_campaign_service():
-    """
-    Остановка сервиса
-    """
-    global campaign_service
-    if campaign_service:
-        campaign_service.is_running = False
-        logger.info("Сервис синхронизации остановлен")
-
-
-async def startup_event():
-    """
-    Вызывается при старте FastAPI приложения
-    """
-    asyncio.create_task(start_campaign_service())
-
-
-async def shutdown_event():
-    """
-    Вызывается при остановке FastAPI приложения  
-    """
-    await stop_campaign_service()

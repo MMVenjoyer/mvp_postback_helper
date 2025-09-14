@@ -50,24 +50,23 @@ class DataBase:
         Получает всех пользователей с sub_3 из БД
         """
         try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT id, sub_3 
-                        FROM users 
-                        WHERE sub_3 IS NOT NULL AND sub_3 != ''
-                    """)
-                    results = cursor.fetchall()
+            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
+                cursor.execute("""
+                    SELECT id, sub_3 
+                    FROM users 
+                    WHERE sub_3 IS NOT NULL AND sub_3 != ''
+                """)
+                results = cursor.fetchall()
 
-                    users = []
-                    for row in results:
-                        users.append({
-                            "user_id": row[0],
-                            "sub_3": row[1]
-                        })
+                users = []
+                for row in results:
+                    users.append({
+                        "user_id": row[0],
+                        "sub_3": row[1]
+                    })
 
-                    print(f"[DB] Найдено {len(users)} пользователей с sub_3")
-                    return users
+                print(f"[DB] Найдено {len(users)} пользователей с sub_3")
+                return users
 
         except Exception as e:
             print(f"[DB] Ошибка получения пользователей с sub_3: {e}")
@@ -78,33 +77,32 @@ class DataBase:
         Получает статистику по заполненности данных кампаний
         """
         try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Всего пользователей
-                    cursor.execute("SELECT COUNT(*) FROM users")
-                    total_users = cursor.fetchone()[0]
+            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
+                # Всего пользователей
+                cursor.execute("SELECT COUNT(*) FROM users")
+                total_users = cursor.fetchone()[0]
 
-                    # Пользователи с sub_3
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM users WHERE sub_3 IS NOT NULL AND sub_3 != ''")
-                    users_with_sub_3 = cursor.fetchone()[0]
+                # Пользователи с sub_3
+                cursor.execute(
+                    "SELECT COUNT(*) FROM users WHERE sub_3 IS NOT NULL AND sub_3 != ''")
+                users_with_sub_3 = cursor.fetchone()[0]
 
-                    # Пользователи с данными кампаний
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM users WHERE company IS NOT NULL OR company_id IS NOT NULL")
-                    users_with_campaign = cursor.fetchone()[0]
+                # Пользователи с данными кампаний
+                cursor.execute(
+                    "SELECT COUNT(*) FROM users WHERE company IS NOT NULL OR company_id IS NOT NULL")
+                users_with_campaign = cursor.fetchone()[0]
 
-                    # Пользователи с полными данными кампаний
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM users WHERE company IS NOT NULL AND company_id IS NOT NULL")
-                    users_with_full_campaign = cursor.fetchone()[0]
+                # Пользователи с полными данными кампаний
+                cursor.execute(
+                    "SELECT COUNT(*) FROM users WHERE company IS NOT NULL AND company_id IS NOT NULL")
+                users_with_full_campaign = cursor.fetchone()[0]
 
-                    return {
-                        "total_users": total_users,
-                        "users_with_sub_3": users_with_sub_3,
-                        "users_with_campaign_data": users_with_campaign,
-                        "users_with_full_campaign_data": users_with_full_campaign
-                    }
+                return {
+                    "total_users": total_users,
+                    "users_with_sub_3": users_with_sub_3,
+                    "users_with_campaign_data": users_with_campaign,
+                    "users_with_full_campaign_data": users_with_full_campaign
+                }
 
         except Exception as e:
             print(f"[DB] Ошибка получения статистики: {e}")
@@ -115,22 +113,20 @@ class DataBase:
         Получает sub_3 пользователя из БД
         """
         try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Предполагаем, что sub_3 хранится в поле sub_3 таблицы users
-                    cursor.execute(
-                        "SELECT sub_3 FROM users WHERE id = %s", (user_id,))
-                    result = cursor.fetchone()
+            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
+                cursor.execute(
+                    "SELECT sub_3 FROM users WHERE id = %s", (user_id,))
+                result = cursor.fetchone()
 
-                    if result:
-                        sub_3 = result[0]
-                        print(
-                            f"[DB] Найден sub_3 для пользователя {user_id}: {sub_3}")
-                        return sub_3
-                    else:
-                        print(
-                            f"[DB] sub_3 не найден для пользователя {user_id}")
-                        return None
+                if result:
+                    sub_3 = result[0]
+                    print(
+                        f"[DB] Найден sub_3 для пользователя {user_id}: {sub_3}")
+                    return sub_3
+                else:
+                    print(
+                        f"[DB] sub_3 не найден для пользователя {user_id}")
+                    return None
 
         except Exception as e:
             print(f"[DB] Ошибка получения sub_3: {e}")
