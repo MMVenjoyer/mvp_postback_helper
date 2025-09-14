@@ -1,5 +1,6 @@
 import psycopg2
 from config import DB_CONFIG
+from typing import List, Dict, Any, Optional
 
 
 class DataBase:
@@ -43,3 +44,133 @@ class DataBase:
             print(f"[DB] Пользователь после обновления: {user_after}")
 
             return rows_affected
+
+    def get_all_users_with_sub_3s(self) -> List[Dict[str, Any]]:
+        """
+        Получает всех пользователей с sub_3 из БД
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, sub_3 
+                        FROM users 
+                        WHERE sub_3 IS NOT NULL AND sub_3 != ''
+                    """)
+                    results = cursor.fetchall()
+
+                    users = []
+                    for row in results:
+                        users.append({
+                            "user_id": row[0],
+                            "sub_3": row[1]
+                        })
+
+                    print(f"[DB] Найдено {len(users)} пользователей с sub_3")
+                    return users
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения пользователей с sub_3: {e}")
+            return []
+
+    def get_campaign_data_stats(self) -> Dict[str, int]:
+        """
+        Получает статистику по заполненности данных кампаний
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Всего пользователей
+                    cursor.execute("SELECT COUNT(*) FROM users")
+                    total_users = cursor.fetchone()[0]
+
+                    # Пользователи с sub_3
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM users WHERE sub_3 IS NOT NULL AND sub_3 != ''")
+                    users_with_sub_3 = cursor.fetchone()[0]
+
+                    # Пользователи с данными кампаний
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM users WHERE company IS NOT NULL OR company_id IS NOT NULL")
+                    users_with_campaign = cursor.fetchone()[0]
+
+                    # Пользователи с полными данными кампаний
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM users WHERE company IS NOT NULL AND company_id IS NOT NULL")
+                    users_with_full_campaign = cursor.fetchone()[0]
+
+                    return {
+                        "total_users": total_users,
+                        "users_with_sub_3": users_with_sub_3,
+                        "users_with_campaign_data": users_with_campaign,
+                        "users_with_full_campaign_data": users_with_full_campaign
+                    }
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения статистики: {e}")
+            return {}
+
+    def get_user_sub_3(self, user_id: int) -> Optional[str]:
+        """
+        Получает sub_3 пользователя из БД
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Предполагаем, что sub_3 хранится в поле sub_3 таблицы users
+                    cursor.execute(
+                        "SELECT sub_3 FROM users WHERE id = %s", (user_id,))
+                    result = cursor.fetchone()
+
+                    if result:
+                        sub_3 = result[0]
+                        print(
+                            f"[DB] Найден sub_3 для пользователя {user_id}: {sub_3}")
+                        return sub_3
+                    else:
+                        print(
+                            f"[DB] sub_3 не найден для пользователя {user_id}")
+                        return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения sub_3: {e}")
+            return None
+
+    def update_user_campaign_data(self, user_id: int, company: str = None, company_id: int = None):
+        """
+        Обновляет данные кампании (company, company_id) для пользователя
+        """
+        try:
+            # Формируем динамический запрос в зависимости от переданных параметров
+            update_fields = []
+            params = [user_id]
+
+            if company is not None:
+                update_fields.append("company = %s")
+                params.insert(-1, company)
+
+            if company_id is not None:
+                update_fields.append("company_id = %s")
+                params.insert(-1, company_id)
+
+            if not update_fields:
+                return {"success": False, "error": "No fields to update"}
+
+            query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
+
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    conn.commit()
+
+                    if cursor.rowcount > 0:
+                        print(
+                            f"[DB] Данные кампании обновлены для пользователя {user_id}")
+                        return {"success": True, "updated_rows": cursor.rowcount}
+                    else:
+                        print(f"[DB] Пользователь {user_id} не найден")
+                        return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] Ошибка обновления данных кампании: {e}")
+            return {"success": False, "error": str(e)}
