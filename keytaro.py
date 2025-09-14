@@ -7,10 +7,12 @@ import logging
 from datetime import datetime, timedelta
 from db import DataBase
 
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+campaign_router = APIRouter()
 db = DataBase()
 
 # Конфигурация - очень консервативные значения
@@ -276,6 +278,53 @@ async def start_campaign_service():
             except Exception as e:
                 logger.error(f"Ошибка в почасовой синхронизации: {e}")
                 await asyncio.sleep(60)  # Пауза минута при ошибке
+
+
+@campaign_router.post("/campaigns/sync-start")
+async def manual_startup_sync(background_tasks: BackgroundTasks):
+    """
+    Ручной запуск стартовой синхронизации
+    """
+    async def run_sync():
+        async with KeitaroCampaignService() as service:
+            await service.startup_campaign_sync()
+
+    background_tasks.add_task(run_sync)
+    return {"status": "started", "message": "Синхронизация запущена в фоне"}
+
+
+@campaign_router.post("/campaigns/sync-hourly")
+async def manual_hourly_sync(background_tasks: BackgroundTasks):
+    """
+    Ручной запуск почасовой синхронизации
+    """
+    async def run_sync():
+        async with KeitaroCampaignService() as service:
+            await service.hourly_campaign_sync()
+
+    background_tasks.add_task(run_sync)
+    return {"status": "started", "message": "Почасовая синхронизация запущена"}
+
+
+@campaign_router.get("/campaigns/stats")
+async def get_campaign_stats():
+    """
+    Статистика по данным кампаний
+    """
+    try:
+        stats = db.get_detailed_campaign_stats()
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@campaign_router.post("/campaigns/stop")
+async def stop_sync():
+    """
+    Остановка текущей синхронизации
+    """
+    await stop_campaign_service()
+    return {"status": "stopped", "message": "Синхронизация остановлена"}
 
 
 async def stop_campaign_service():
