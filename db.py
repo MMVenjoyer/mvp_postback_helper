@@ -52,8 +52,8 @@ class DataBase:
         try:
             with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
                 cursor.execute("""
-                    SELECT id, sub_3 
-                    FROM users 
+                    SELECT id, sub_3
+                    FROM users
                     WHERE sub_3 IS NOT NULL AND sub_3 != ''
                 """)
                 results = cursor.fetchall()
@@ -174,32 +174,32 @@ class DataBase:
         """
         Получает пользователей без данных кампании (company IS NULL и company_id IS NULL)
         """
-        try:
-            with self.conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, sub_3 
-                    FROM users 
-                    WHERE sub_3 IS NOT NULL 
+        # try:
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                    SELECT id, sub_3
+                    FROM users
+                    WHERE sub_3 IS NOT NULL
                     AND sub_3 != ''
                     AND (company IS NULL AND company_id IS NULL)
                 """)
-                results = cursor.fetchall()
+            results = cursor.fetchall()
 
-                users = []
-                for row in results:
-                    users.append({
-                        "user_id": row[0],
-                        "sub_3": row[1]
-                    })
+            users = []
+            for row in results:
+                users.append({
+                    "user_id": row[0],
+                    "sub_3": row[1]
+                })
 
-                print(
-                    f"[DB] Найдено {len(users)} пользователей без данных кампании")
-                return users
-
-        except Exception as e:
             print(
-                f"[DB] Ошибка получения пользователей без данных кампании: {e}")
-            return []
+                f"[DB] Найдено {len(users)} пользователей без данных кампании")
+            return users
+
+        # except Exception as e:
+        #     print(
+        #         f"[DB] Ошибка получения пользователей без данных кампании: {e}")
+        #     return []
 
     def get_users_with_empty_markers(self) -> List[Dict[str, Any]]:
         """
