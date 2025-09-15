@@ -172,34 +172,37 @@ class DataBase:
 
     def get_users_without_campaign_data(self) -> List[Dict[str, Any]]:
         """
-        Получает пользователей без данных кампании (company IS NULL и company_id IS NULL)
+        Получает пользователей БЕЗ данных кампании:
+        - Новая логика: ищем тех, у кого company = 'None' и company_id = -1
+        - Это те, кого мы пометили как "пустых" из-за ошибок API
         """
-        # try:
-        with self.conn.cursor() as cursor:
-            cursor.execute("""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
                     SELECT id, sub_3
                     FROM users
                     WHERE sub_3 IS NOT NULL
                     AND sub_3 != ''
-                    AND (company IS NULL AND company_id IS NULL)
-                """)
-            results = cursor.fetchall()
+                    AND company = %s 
+                    AND company_id = %s
+                """, ('None', -1))
+                results = cursor.fetchall()
 
-            users = []
-            for row in results:
-                users.append({
-                    "user_id": row[0],
-                    "sub_3": row[1]
-                })
+                users = []
+                for row in results:
+                    users.append({
+                        "user_id": row[0],
+                        "sub_3": row[1]
+                    })
 
+                print(
+                    f"[DB] Найдено {len(users)} пользователей с пустыми маркерами (None/-1)")
+                return users
+
+        except Exception as e:
             print(
-                f"[DB] Найдено {len(users)} пользователей без данных кампании")
-            return users
-
-        # except Exception as e:
-        #     print(
-        #         f"[DB] Ошибка получения пользователей без данных кампании: {e}")
-        #     return []
+                f"[DB] Ошибка получения пользователей с пустыми маркерами: {e}")
+            return []
 
     def get_users_with_empty_markers(self) -> List[Dict[str, Any]]:
         """
@@ -235,7 +238,7 @@ class DataBase:
 
     def get_detailed_campaign_stats(self) -> Dict[str, int]:
         """
-        Получает детальную статистику по данным кампаний
+        ОБНОВЛЕННАЯ статистика с новой логикой
         """
         try:
             with self.conn.cursor() as cursor:
@@ -252,16 +255,23 @@ class DataBase:
                 """)
                 stats['users_with_sub_3'] = cursor.fetchone()[0]
 
-                # Пользователи без данных кампании (нужно обработать)
+                # Пользователи с РЕАЛЬНО пустыми полями (NULL)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE sub_3 IS NOT NULL 
                     AND sub_3 != ''
                     AND (company IS NULL AND company_id IS NULL)
                 """)
-                stats['users_without_campaign_data'] = cursor.fetchone()[0]
+                stats['users_with_really_empty_data'] = cursor.fetchone()[0]
 
-                # Пользователи с реальными данными кампании
+                # Пользователи с ПУСТЫМИ МАРКЕРАМИ (None/-1) - их нужно переобработать
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE company = %s AND company_id = %s
+                """, ('None', -1))
+                stats['users_with_empty_markers'] = cursor.fetchone()[0]
+
+                # Пользователи с РЕАЛЬНЫМИ данными кампаний
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company IS NOT NULL 
@@ -271,13 +281,6 @@ class DataBase:
                 """)
                 stats['users_with_real_campaign_data'] = cursor.fetchone()[0]
 
-                # Пользователи с пустыми маркерами (данных не найдено в Keitaro)
-                cursor.execute("""
-                    SELECT COUNT(*) FROM users 
-                    WHERE company = 'None' AND company_id = -1
-                """)
-                stats['users_with_empty_markers'] = cursor.fetchone()[0]
-
                 # Пользователи без sub_3
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
@@ -285,7 +288,7 @@ class DataBase:
                 """)
                 stats['users_without_sub_3'] = cursor.fetchone()[0]
 
-                # Топ кампании
+                # Топ кампании (только реальные, не None)
                 cursor.execute("""
                     SELECT company, COUNT(*) as count
                     FROM users 
