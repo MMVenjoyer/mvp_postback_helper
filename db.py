@@ -307,3 +307,154 @@ class DataBase:
         except Exception as e:
             print(f"[DB] Ошибка получения детальной статистики: {e}")
             return {}
+
+    # Добавьте эти методы в класс DataBase в файле db.py:
+
+    def update_user_campaign_landing_data(self, user_id: int,
+                                          company: str = None, company_id: int = None,
+                                          landing: str = None, landing_id: int = None):
+        """
+        Обновляет данные кампании и лендинга для пользователя
+        """
+        try:
+            update_fields = []
+            params = []
+
+            if company is not None:
+                update_fields.append("company = %s")
+                params.append(company)
+
+            if company_id is not None:
+                update_fields.append("company_id = %s")
+                params.append(company_id)
+
+            if landing is not None:
+                update_fields.append("landing = %s")
+                params.append(landing)
+
+            if landing_id is not None:
+                update_fields.append("landing_id = %s")
+                params.append(landing_id)
+
+            if not update_fields:
+                return {"success": False, "error": "No fields to update"}
+
+            params.append(user_id)
+            query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
+
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, params)
+
+                if cursor.rowcount > 0:
+                    print(f"[DB] Данные обновлены для пользователя {user_id}")
+                    print(f"    company={company}, company_id={company_id}")
+                    print(f"    landing={landing}, landing_id={landing_id}")
+                    return {"success": True, "updated_rows": cursor.rowcount}
+                else:
+                    print(f"[DB] Пользователь {user_id} не найден")
+                    return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] Ошибка обновления данных: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_users_without_campaign_landing_data(self) -> List[Dict[str, Any]]:
+        """
+        Получает пользователей БЕЗ данных кампании или лендинга
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id
+                    FROM users
+                    WHERE (
+                        (company IS NULL OR company_id IS NULL OR landing IS NULL OR landing_id IS NULL)
+                        AND NOT (company = 'None' AND company_id = -1)
+                    )
+                """)
+                results = cursor.fetchall()
+
+                users = []
+                for row in results:
+                    users.append({"user_id": row[0]})
+
+                print(
+                    f"[DB] Найдено {len(users)} пользователей без полных данных")
+                return users
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения пользователей: {e}")
+            return []
+
+    def get_users_with_empty_markers_extended(self) -> List[Dict[str, Any]]:
+        """
+        Получает пользователей с пустыми маркерами для повторной проверки
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id
+                    FROM users 
+                    WHERE (
+                        (company = %s AND company_id = %s) 
+                        OR 
+                        (landing = %s AND landing_id = %s)
+                    )
+                """, ('None', -1, 'None', -1))
+                results = cursor.fetchall()
+
+                users = []
+                for row in results:
+                    users.append({"user_id": row[0]})
+
+                print(
+                    f"[DB] Найдено {len(users)} пользователей с пустыми маркерами")
+                return users
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения пользователей с маркерами: {e}")
+            return []
+
+    def get_campaign_landing_stats(self) -> Dict[str, Any]:
+        """
+        Получает расширенную статистику по кампаниям и лендингам
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                stats = {}
+
+                cursor.execute("SELECT COUNT(*) FROM users")
+                stats['total_users'] = cursor.fetchone()[0]
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE company IS NOT NULL 
+                    AND company != 'None' 
+                    AND company_id IS NOT NULL 
+                    AND company_id != -1
+                    AND landing IS NOT NULL 
+                    AND landing != 'None'
+                    AND landing_id IS NOT NULL 
+                    AND landing_id != -1
+                """)
+                stats['users_with_full_data'] = cursor.fetchone()[0]
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE (company = 'None' AND company_id = -1)
+                    OR (landing = 'None' AND landing_id = -1)
+                """)
+                stats['users_with_empty_markers'] = cursor.fetchone()[0]
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE (company IS NULL OR company_id IS NULL 
+                        OR landing IS NULL OR landing_id IS NULL)
+                """)
+                stats['users_with_null_data'] = cursor.fetchone()[0]
+
+                return stats
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения статистики: {e}")
+            return {}

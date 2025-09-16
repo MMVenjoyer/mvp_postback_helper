@@ -4,40 +4,40 @@ import asyncio
 
 from postback_router import router as postback_router
 from resolver_router import router as resolver_router
-# from keytaro import startup_event, shutdown_event, campaign_router  # Импортируем роутер
+from keytaro import startup_event, shutdown_event, campaign_router  # Импортируем роутер
 from db import DataBase
 
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     """
-#     Управление жизненным циклом приложения
-#     """
-#     # Startup
-#     print("🚀 Запуск приложения...")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Управление жизненным циклом приложения
+    """
+    # Startup
+    print("🚀 Запуск приложения...")
 
-#     # Запускаем фоновый сервис синхронизации кампаний
-#     asyncio.create_task(startup_event())
+    # Запускаем фоновый сервис синхронизации кампаний
+    asyncio.create_task(startup_event())
 
-#     yield
+    yield
 
-#     # Shutdown
-#     print("🛑 Остановка приложения...")
-#     await shutdown_event()
+    # Shutdown
+    print("🛑 Остановка приложения...")
+    await shutdown_event()
 
 # Создаем FastAPI приложение с lifespan
 app = FastAPI(
     title="Deeplink Service + Keitaro Integration",
     description="Сервис для резолва диплинков и интеграции с Keitaro",
     version="1.0.0",
-    # lifespan=lifespan
+    lifespan=lifespan
 )
 
 # Подключаем роутеры
 app.include_router(postback_router, prefix="/postback", tags=["postbacks"])
 app.include_router(resolver_router, prefix="/resolve", tags=["resolver"])
-# app.include_router(campaign_router, prefix="/api",
-#    tags=["campaigns"])  # Добавляем роутер кампаний
+app.include_router(campaign_router, prefix="/api",
+                   tags=["campaigns"])  # Добавляем роутер кампаний
 
 
 @app.get("/", tags=["main"])
