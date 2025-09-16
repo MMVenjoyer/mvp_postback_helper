@@ -314,9 +314,13 @@ class DataBase:
                                           company: str = None, company_id: int = None,
                                           landing: str = None, landing_id: int = None):
         """
-        Обновляет данные кампании и лендинга для пользователя
+        ИСПРАВЛЕННЫЙ метод с детальным логированием
         """
         try:
+            print(f"[DB UPDATE] Начинаем обновление user_id={user_id}")
+            print(
+                f"[DB UPDATE] Данные: company={company}, company_id={company_id}, landing={landing}, landing_id={landing_id}")
+
             update_fields = []
             params = []
 
@@ -337,40 +341,65 @@ class DataBase:
                 params.append(landing_id)
 
             if not update_fields:
+                print(f"[DB UPDATE] Нет полей для обновления!")
                 return {"success": False, "error": "No fields to update"}
 
             params.append(user_id)
             query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
 
+            print(f"[DB UPDATE] SQL: {query}")
+            print(f"[DB UPDATE] Параметры: {params}")
+
             with self.conn.cursor() as cursor:
                 cursor.execute(query, params)
 
+                # Проверяем что обновилось
+                cursor.execute("""
+                    SELECT company, company_id, landing, landing_id 
+                    FROM users WHERE id = %s
+                """, (user_id,))
+                result = cursor.fetchone()
+
                 if cursor.rowcount > 0:
-                    print(f"[DB] Данные обновлены для пользователя {user_id}")
-                    print(f"    company={company}, company_id={company_id}")
-                    print(f"    landing={landing}, landing_id={landing_id}")
+                    print(f"[DB UPDATE] ✓ Успешно обновлен user_id={user_id}")
+                    if result:
+                        print(
+                            f"[DB UPDATE] Новые значения: company={result[0]}, company_id={result[1]}, landing={result[2]}, landing_id={result[3]}")
                     return {"success": True, "updated_rows": cursor.rowcount}
                 else:
-                    print(f"[DB] Пользователь {user_id} не найден")
+                    print(
+                        f"[DB UPDATE] ✗ Пользователь {user_id} не найден в БД")
                     return {"success": False, "error": "User not found"}
 
         except Exception as e:
-            print(f"[DB] Ошибка обновления данных: {e}")
+            print(
+                f"[DB UPDATE] ✗ Исключение при обновлении user_id={user_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     def get_users_without_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
-        Получает пользователей БЕЗ данных кампании или лендинга
+        ИСПРАВЛЕННЫЙ метод - получает всех пользователей у которых 
+        хотя бы одно поле NULL или имеет маркер None/-1
         """
         try:
             with self.conn.cursor() as cursor:
+                # ВАЖНО: Берем всех у кого хотя бы одно поле пустое или с маркером
                 cursor.execute("""
                     SELECT id
                     FROM users
-                    WHERE (
-                        (company IS NULL OR company_id IS NULL OR landing IS NULL OR landing_id IS NULL)
-                        AND NOT (company = 'None' AND company_id = -1)
-                    )
+                    WHERE 
+                        company IS NULL 
+                        OR company_id IS NULL 
+                        OR landing IS NULL 
+                        OR landing_id IS NULL
+                        OR company = 'None'
+                        OR company_id = -1
+                        OR landing = 'None'
+                        OR landing_id = -1
+                    ORDER BY id
+                    LIMIT 1000
                 """)
                 results = cursor.fetchall()
 
@@ -378,8 +407,13 @@ class DataBase:
                 for row in results:
                     users.append({"user_id": row[0]})
 
-                print(
-                    f"[DB] Найдено {len(users)} пользователей без полных данных")
+                print(f"[DB] Найдено {len(users)} пользователей для обработки")
+
+                # Дополнительная диагностика
+                if len(users) > 0:
+                    print(
+                        f"[DB] Первые 5 ID для обработки: {[u['user_id'] for u in users[:5]]}")
+
                 return users
 
         except Exception as e:
