@@ -21,9 +21,6 @@ DELAY_BETWEEN_REQUESTS = 0.5
 BATCH_SIZE = 10
 HOURLY_CHECK_INTERVAL = 3600
 
-EMPTY_MARKER = "None"
-EMPTY_ID_MARKER = -1
-
 
 class KeitaroCampaignService:
     def __init__(self):
@@ -39,9 +36,14 @@ class KeitaroCampaignService:
             await self.session.aclose()
 
     def get_users_for_processing(self) -> List[Dict[str, Any]]:
+        """
+        Получает пользователей для обработки - только тех, у кого NULL в полях,
+        НО НЕ тех, у кого уже стоят маркеры None/-1
+        """
         try:
-            users = db.get_users_without_campaign_landing_data()
-            logger.info(f"Найдено {len(users)} пользователей для обработки")
+            users = db.get_users_with_null_campaign_landing_data()
+            logger.info(
+                f"Найдено {len(users)} пользователей для обработки (без маркеров None/-1)")
             return users
         except Exception as e:
             logger.error(f"Ошибка получения пользователей: {e}")
@@ -109,7 +111,7 @@ class KeitaroCampaignService:
         processed = 0
         successful = 0
         failed = 0
-        empty_results = 0
+        skipped = 0
 
         logger.info(f"Начинаем обработку {total_users} пользователей")
         logger.info(f"Скорость: {MAX_USERS_PER_SECOND} запросов в секунду")
@@ -130,7 +132,7 @@ class KeitaroCampaignService:
                 conversion_data = await self.get_conversion_data(sub_id_13)
 
                 if conversion_data.get('found'):
-                    # Найдены данные - обновляем БД
+                    # Найдены данные - обновляем БД реальными данными
                     result = db.update_user_campaign_landing_data(
                         user_id,
                         company=conversion_data.get('campaign'),
@@ -148,19 +150,23 @@ class KeitaroCampaignService:
                         logger.error(
                             f"✗ Ошибка обновления {user_id}: {result.get('error')}")
                 else:
-                    # Данные не найдены - помечаем пустыми маркерами
+                    # Данные не найдены - ПОМЕЧАЕМ маркерами для исключения из будущих проверок
                     result = db.update_user_campaign_landing_data(
                         user_id,
-                        company=EMPTY_MARKER,
-                        company_id=EMPTY_ID_MARKER,
-                        landing=EMPTY_MARKER,
-                        landing_id=EMPTY_ID_MARKER
+                        company="None",
+                        company_id=-1,
+                        landing="None",
+                        landing_id=-1
                     )
 
                     if result.get('success'):
-                        empty_results += 1
+                        skipped += 1
                         logger.info(
-                            f"○ Помечен как пустой {user_id}: {conversion_data.get('reason')}")
+                            f"⊘ Помечен как обработанный без данных {user_id}: {conversion_data.get('reason')}")
+                    else:
+                        failed += 1
+                        logger.error(
+                            f"✗ Ошибка пометки {user_id}: {result.get('error')}")
 
             except Exception as e:
                 failed += 1
@@ -180,14 +186,14 @@ class KeitaroCampaignService:
         logger.info(f"  Всего: {total_users}")
         logger.info(f"  Обработано: {processed}")
         logger.info(f"  Найдены данные: {successful}")
-        logger.info(f"  Пустые результаты: {empty_results}")
+        logger.info(f"  Помечено как пустые: {skipped}")
         logger.info(f"  Ошибки: {failed}")
 
         return {
             "total": total_users,
             "processed": processed,
             "successful": successful,
-            "empty_results": empty_results,
+            "skipped": skipped,
             "failed": failed
         }
 
@@ -196,7 +202,7 @@ class KeitaroCampaignService:
 
         users = self.get_users_for_processing()
         if not users:
-            logger.info("Все пользователи уже имеют данные")
+            logger.info("Все пользователи уже обработаны")
             return
 
         self.is_running = True
@@ -207,15 +213,20 @@ class KeitaroCampaignService:
         return result
 
     async def hourly_campaign_sync(self):
-        logger.info("=== ПОЧАСОВАЯ ПРОВЕРКА: Синхронизация данных ===")
+        """
+        Почасовая проверка - обрабатывает ТОЛЬКО новых пользователей с NULL полями
+        Пользователи с маркерами None/-1 игнорируются навсегда
+        """
+        logger.info("=== ПОЧАСОВАЯ ПРОВЕРКА: Поиск новых пользователей ===")
 
-        users = db.get_users_with_empty_markers_extended()
+        # Получаем только новых пользователей с NULL полями (без маркеров)
+        users = self.get_users_for_processing()
         if not users:
-            logger.info("Нет пользователей для повторной проверки")
+            logger.info("Нет новых пользователей для обработки")
             return
 
         logger.info(
-            f"Найдено {len(users)} пользователей для повторной проверки")
+            f"Найдено {len(users)} новых пользователей для обработки")
 
         self.is_running = True
         result = await self.process_users_slowly(users)
@@ -305,3 +316,13 @@ async def test_single_user(user_id: int):
         sub_id_13 = str(user_id)  # sub_id_13 = user_id из БД
         result = await service.get_conversion_data(sub_id_13)
         return {"status": "ok", "user_id": user_id, "sub_id_13": sub_id_13, "data": result}
+
+
+@campaign_router.get("/campaigns/users-status")
+async def get_users_status():
+    """Получить статистику по пользователям"""
+    try:
+        stats = db.get_detailed_users_stats()
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}

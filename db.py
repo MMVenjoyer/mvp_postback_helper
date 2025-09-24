@@ -8,43 +8,6 @@ class DataBase:
         self.conn = psycopg2.connect(**DB_CONFIG)
         self.conn.autocommit = True
 
-    def update_started_chat(self, user_id: int, status: int):
-        with self.conn.cursor() as cur:
-            # Сначала проверим, что пользователь действительно есть
-            print(
-                f"[DB] Ищем пользователя с id={user_id} (тип: {type(user_id)})")
-            cur.execute(
-                "SELECT id, started_chat FROM users WHERE id = %s", (user_id,))
-            user_before = cur.fetchone()
-            print(f"[DB] Пользователь до обновления: {user_before}")
-
-            if not user_before:
-                print(f"[DB] ВНИМАНИЕ: Пользователь не найден при поиске!")
-                # Попробуем найти похожих пользователей
-                cur.execute(
-                    "SELECT id FROM users WHERE CAST(id AS TEXT) LIKE %s LIMIT 5", (f"%{user_id}%",))
-                similar = cur.fetchall()
-                print(f"[DB] Похожие ID в БД: {similar}")
-                return 0
-
-            # Выполняем UPDATE
-            print(
-                f"[DB] Выполняем UPDATE для user_id={user_id}, status={status}")
-            cur.execute("""
-                UPDATE users SET started_chat = %s WHERE id = %s;
-            """, (status, user_id))
-
-            rows_affected = cur.rowcount
-            print(f"[DB] Обновлено строк: {rows_affected}")
-
-            # Проверяем результат после UPDATE
-            cur.execute(
-                "SELECT id, started_chat FROM users WHERE id = %s", (user_id,))
-            user_after = cur.fetchone()
-            print(f"[DB] Пользователь после обновления: {user_after}")
-
-            return rows_affected
-
     def get_all_users_with_sub_3s(self) -> List[Dict[str, Any]]:
         """
         Получает всех пользователей с sub_3 из БД
@@ -394,10 +357,6 @@ class DataBase:
                         OR company_id IS NULL 
                         OR landing IS NULL 
                         OR landing_id IS NULL
-                        OR company = 'None'
-                        OR company_id = -1
-                        OR landing = 'None'
-                        OR landing_id = -1
                     ORDER BY id
                     LIMIT 1000
                 """)
@@ -491,4 +450,176 @@ class DataBase:
 
         except Exception as e:
             print(f"[DB] Ошибка получения статистики: {e}")
+            return {}
+
+
+# Добавьте эти методы в класс DataBase в файле db.py:
+
+    def get_users_with_null_campaign_landing_data(self) -> List[Dict[str, Any]]:
+        """
+        Получает ТОЛЬКО пользователей с NULL полями, 
+        БЕЗ тех, кто уже помечен маркерами None/-1
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                # Берем только тех, у кого есть NULL поля
+                # И исключаем тех, кто уже помечен маркерами
+                cursor.execute("""
+                    SELECT id
+                    FROM users
+                    WHERE (
+                        company IS NULL 
+                        OR company_id IS NULL 
+                        OR landing IS NULL 
+                        OR landing_id IS NULL
+                    )
+                    AND NOT (
+                        company = 'None' 
+                        OR company_id = -1 
+                        OR landing = 'None' 
+                        OR landing_id = -1
+                    )
+                    ORDER BY id
+                    LIMIT 1000
+                """)
+                results = cursor.fetchall()
+
+                users = []
+                for row in results:
+                    users.append({"user_id": row[0]})
+
+                print(
+                    f"[DB] Найдено {len(users)} пользователей с NULL полями (без маркеров)")
+
+                if len(users) > 0:
+                    print(
+                        f"[DB] Первые 5 ID для обработки: {[u['user_id'] for u in users[:5]]}")
+
+                return users
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения пользователей с NULL полями: {e}")
+            return []
+
+    def get_detailed_users_stats(self) -> Dict[str, Any]:
+        """
+        Детальная статистика по пользователям и их статусам
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                stats = {}
+
+                # Всего пользователей
+                cursor.execute("SELECT COUNT(*) FROM users")
+                stats['total_users'] = cursor.fetchone()[0]
+
+                # Пользователи с полными данными (реальные кампании и лендинги)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE company IS NOT NULL 
+                    AND company != 'None' 
+                    AND company_id IS NOT NULL 
+                    AND company_id != -1
+                    AND landing IS NOT NULL 
+                    AND landing != 'None'
+                    AND landing_id IS NOT NULL 
+                    AND landing_id != -1
+                """)
+                stats['users_with_full_data'] = cursor.fetchone()[0]
+
+                # Пользователи с маркерами "пусто" (обработаны, но данных нет)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE company = 'None' 
+                    AND company_id = -1
+                    AND landing = 'None' 
+                    AND landing_id = -1
+                """)
+                stats['users_marked_as_empty'] = cursor.fetchone()[0]
+
+                # Пользователи с NULL полями (еще не обработаны)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE (
+                        company IS NULL 
+                        OR company_id IS NULL 
+                        OR landing IS NULL 
+                        OR landing_id IS NULL
+                    )
+                    AND NOT (
+                        company = 'None' 
+                        OR company_id = -1 
+                        OR landing = 'None' 
+                        OR landing_id = -1
+                    )
+                """)
+                stats['users_not_processed'] = cursor.fetchone()[0]
+
+                # Частично заполненные (есть данные, но не все)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE (
+                        (company IS NOT NULL AND company != 'None')
+                        OR (company_id IS NOT NULL AND company_id != -1)
+                        OR (landing IS NOT NULL AND landing != 'None')
+                        OR (landing_id IS NOT NULL AND landing_id != -1)
+                    )
+                    AND NOT (
+                        company IS NOT NULL AND company != 'None'
+                        AND company_id IS NOT NULL AND company_id != -1
+                        AND landing IS NOT NULL AND landing != 'None'
+                        AND landing_id IS NOT NULL AND landing_id != -1
+                    )
+                """)
+                stats['users_partially_filled'] = cursor.fetchone()[0]
+
+                # Процентное соотношение
+                if stats['total_users'] > 0:
+                    stats['percent_with_data'] = round(
+                        (stats['users_with_full_data'] /
+                         stats['total_users']) * 100, 2
+                    )
+                    stats['percent_marked_empty'] = round(
+                        (stats['users_marked_as_empty'] /
+                         stats['total_users']) * 100, 2
+                    )
+                    stats['percent_not_processed'] = round(
+                        (stats['users_not_processed'] /
+                         stats['total_users']) * 100, 2
+                    )
+
+                # Топ кампании (только реальные)
+                cursor.execute("""
+                    SELECT company, COUNT(*) as count
+                    FROM users 
+                    WHERE company IS NOT NULL 
+                    AND company != 'None'
+                    GROUP BY company 
+                    ORDER BY count DESC 
+                    LIMIT 5
+                """)
+                top_campaigns = cursor.fetchall()
+                stats['top_campaigns'] = [
+                    {"name": row[0], "count": row[1]} for row in top_campaigns
+                ]
+
+                # Топ лендинги (только реальные)
+                cursor.execute("""
+                    SELECT landing, COUNT(*) as count
+                    FROM users 
+                    WHERE landing IS NOT NULL 
+                    AND landing != 'None'
+                    GROUP BY landing 
+                    ORDER BY count DESC 
+                    LIMIT 5
+                """)
+                top_landings = cursor.fetchall()
+                stats['top_landings'] = [
+                    {"name": row[0], "count": row[1]} for row in top_landings
+                ]
+
+                return stats
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения детальной статистики: {e}")
             return {}
