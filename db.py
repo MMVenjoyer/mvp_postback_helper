@@ -455,6 +455,7 @@ class DataBase:
 
 # Добавьте эти методы в класс DataBase в файле db.py:
 
+
     def get_users_with_null_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
         Получает ТОЛЬКО пользователей с NULL полями, 
@@ -462,10 +463,34 @@ class DataBase:
         """
         try:
             with self.conn.cursor() as cursor:
-                # Берем только тех, у кого есть NULL поля
-                # И исключаем тех, кто уже помечен маркерами
+                # Сначала проверим, сколько всего пользователей с NULL
                 cursor.execute("""
-                    SELECT id
+                    SELECT COUNT(*) FROM users 
+                    WHERE company IS NULL 
+                    OR company_id IS NULL 
+                    OR landing IS NULL 
+                    OR landing_id IS NULL
+                """)
+                total_with_null = cursor.fetchone()[0]
+                print(
+                    f"[DB] Всего пользователей с NULL полями: {total_with_null}")
+
+                # Проверим сколько с маркерами
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE company = 'None' 
+                    AND company_id = -1 
+                    AND landing = 'None' 
+                    AND landing_id = -1
+                """)
+                with_markers = cursor.fetchone()[0]
+                print(
+                    f"[DB] Пользователей с маркерами None/-1: {with_markers}")
+
+                # Теперь основной запрос - берем тех у кого есть NULL
+                # но НЕ все поля заполнены маркерами
+                cursor.execute("""
+                    SELECT id, company, company_id, landing, landing_id
                     FROM users
                     WHERE (
                         company IS NULL 
@@ -475,9 +500,9 @@ class DataBase:
                     )
                     AND NOT (
                         company = 'None' 
-                        OR company_id = -1 
-                        OR landing = 'None' 
-                        OR landing_id = -1
+                        AND company_id = -1 
+                        AND landing = 'None' 
+                        AND landing_id = -1
                     )
                     ORDER BY id
                     LIMIT 1000
@@ -486,19 +511,28 @@ class DataBase:
 
                 users = []
                 for row in results:
-                    users.append({"user_id": row[0]})
+                    users.append({
+                        "user_id": row[0],
+                        "company": row[1],
+                        "company_id": row[2],
+                        "landing": row[3],
+                        "landing_id": row[4]
+                    })
 
-                print(
-                    f"[DB] Найдено {len(users)} пользователей с NULL полями (без маркеров)")
+                print(f"[DB] Найдено {len(users)} пользователей для обработки")
 
                 if len(users) > 0:
-                    print(
-                        f"[DB] Первые 5 ID для обработки: {[u['user_id'] for u in users[:5]]}")
+                    print(f"[DB] Примеры первых 3 записей:")
+                    for u in users[:3]:
+                        print(
+                            f"  - ID: {u['user_id']}, company: {u['company']}, company_id: {u['company_id']}, landing: {u['landing']}, landing_id: {u['landing_id']}")
 
-                return users
+                return [{"user_id": u["user_id"]} for u in users]
 
         except Exception as e:
             print(f"[DB] Ошибка получения пользователей с NULL полями: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def get_detailed_users_stats(self) -> Dict[str, Any]:
