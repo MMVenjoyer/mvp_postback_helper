@@ -13,7 +13,7 @@ class DataBase:
         Получает всех пользователей с sub_3 из БД
         """
         try:
-            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
+            with self.conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, sub_3
                     FROM users
@@ -40,22 +40,18 @@ class DataBase:
         Получает статистику по заполненности данных кампаний
         """
         try:
-            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
-                # Всего пользователей
+            with self.conn.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) FROM users")
                 total_users = cursor.fetchone()[0]
 
-                # Пользователи с sub_3
                 cursor.execute(
                     "SELECT COUNT(*) FROM users WHERE sub_3 IS NOT NULL AND sub_3 != ''")
                 users_with_sub_3 = cursor.fetchone()[0]
 
-                # Пользователи с данными кампаний
                 cursor.execute(
                     "SELECT COUNT(*) FROM users WHERE company IS NOT NULL OR company_id IS NOT NULL")
                 users_with_campaign = cursor.fetchone()[0]
 
-                # Пользователи с полными данными кампаний
                 cursor.execute(
                     "SELECT COUNT(*) FROM users WHERE company IS NOT NULL AND company_id IS NOT NULL")
                 users_with_full_campaign = cursor.fetchone()[0]
@@ -76,7 +72,7 @@ class DataBase:
         Получает sub_3 пользователя из БД
         """
         try:
-            with self.conn.cursor() as cursor:  # ИСПРАВЛЕНО
+            with self.conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT sub_3 FROM users WHERE id = %s", (user_id,))
                 result = cursor.fetchone()
@@ -87,8 +83,7 @@ class DataBase:
                         f"[DB] Найден sub_3 для пользователя {user_id}: {sub_3}")
                     return sub_3
                 else:
-                    print(
-                        f"[DB] sub_3 не найден для пользователя {user_id}")
+                    print(f"[DB] sub_3 не найден для пользователя {user_id}")
                     return None
 
         except Exception as e:
@@ -100,7 +95,6 @@ class DataBase:
         Обновляет данные кампании (company, company_id) для пользователя
         """
         try:
-            # Формируем динамический запрос в зависимости от переданных параметров
             update_fields = []
             params = [user_id]
 
@@ -119,7 +113,6 @@ class DataBase:
 
             with self.conn.cursor() as cursor:
                 cursor.execute(query, params)
-                # НЕ нужно conn.commit() - у вас autocommit = True
 
                 if cursor.rowcount > 0:
                     print(
@@ -135,9 +128,7 @@ class DataBase:
 
     def get_users_without_campaign_data(self) -> List[Dict[str, Any]]:
         """
-        Получает пользователей БЕЗ данных кампании:
-        - Новая логика: ищем тех, у кого company = 'None' и company_id = -1
-        - Это те, кого мы пометили как "пустых" из-за ошибок API
+        Получает пользователей БЕЗ данных кампании
         """
         try:
             with self.conn.cursor() as cursor:
@@ -207,18 +198,15 @@ class DataBase:
             with self.conn.cursor() as cursor:
                 stats = {}
 
-                # Всего пользователей
                 cursor.execute("SELECT COUNT(*) FROM users")
                 stats['total_users'] = cursor.fetchone()[0]
 
-                # Пользователи с sub_3
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE sub_3 IS NOT NULL AND sub_3 != ''
                 """)
                 stats['users_with_sub_3'] = cursor.fetchone()[0]
 
-                # Пользователи с РЕАЛЬНО пустыми полями (NULL)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE sub_3 IS NOT NULL 
@@ -227,14 +215,12 @@ class DataBase:
                 """)
                 stats['users_with_really_empty_data'] = cursor.fetchone()[0]
 
-                # Пользователи с ПУСТЫМИ МАРКЕРАМИ (None/-1) - их нужно переобработать
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company = %s AND company_id = %s
                 """, ('None', -1))
                 stats['users_with_empty_markers'] = cursor.fetchone()[0]
 
-                # Пользователи с РЕАЛЬНЫМИ данными кампаний
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company IS NOT NULL 
@@ -244,14 +230,12 @@ class DataBase:
                 """)
                 stats['users_with_real_campaign_data'] = cursor.fetchone()[0]
 
-                # Пользователи без sub_3
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE sub_3 IS NULL OR sub_3 = ''
                 """)
                 stats['users_without_sub_3'] = cursor.fetchone()[0]
 
-                # Топ кампании (только реальные, не None)
                 cursor.execute("""
                     SELECT company, COUNT(*) as count
                     FROM users 
@@ -271,18 +255,17 @@ class DataBase:
             print(f"[DB] Ошибка получения детальной статистики: {e}")
             return {}
 
-    # Добавьте эти методы в класс DataBase в файле db.py:
-
     def update_user_campaign_landing_data(self, user_id: int,
                                           company: str = None, company_id: int = None,
-                                          landing: str = None, landing_id: int = None):
+                                          landing: str = None, landing_id: int = None,
+                                          country: str = None):
         """
-        ИСПРАВЛЕННЫЙ метод с детальным логированием
+        ОБНОВЛЕННЫЙ метод с поддержкой country
         """
         try:
             print(f"[DB UPDATE] Начинаем обновление user_id={user_id}")
             print(
-                f"[DB UPDATE] Данные: company={company}, company_id={company_id}, landing={landing}, landing_id={landing_id}")
+                f"[DB UPDATE] Данные: company={company}, company_id={company_id}, landing={landing}, landing_id={landing_id}, country={country}")
 
             update_fields = []
             params = []
@@ -303,6 +286,10 @@ class DataBase:
                 update_fields.append("landing_id = %s")
                 params.append(landing_id)
 
+            if country is not None:
+                update_fields.append("country = %s")
+                params.append(country)
+
             if not update_fields:
                 print(f"[DB UPDATE] Нет полей для обновления!")
                 return {"success": False, "error": "No fields to update"}
@@ -316,9 +303,8 @@ class DataBase:
             with self.conn.cursor() as cursor:
                 cursor.execute(query, params)
 
-                # Проверяем что обновилось
                 cursor.execute("""
-                    SELECT company, company_id, landing, landing_id 
+                    SELECT company, company_id, landing, landing_id, country
                     FROM users WHERE id = %s
                 """, (user_id,))
                 result = cursor.fetchone()
@@ -327,7 +313,7 @@ class DataBase:
                     print(f"[DB UPDATE] ✓ Успешно обновлен user_id={user_id}")
                     if result:
                         print(
-                            f"[DB UPDATE] Новые значения: company={result[0]}, company_id={result[1]}, landing={result[2]}, landing_id={result[3]}")
+                            f"[DB UPDATE] Новые значения: company={result[0]}, company_id={result[1]}, landing={result[2]}, landing_id={result[3]}, country={result[4]}")
                     return {"success": True, "updated_rows": cursor.rowcount}
                 else:
                     print(
@@ -343,12 +329,10 @@ class DataBase:
 
     def get_users_without_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
-        ИСПРАВЛЕННЫЙ метод - получает всех пользователей у которых 
-        хотя бы одно поле NULL или имеет маркер None/-1
+        Получает всех пользователей у которых хотя бы одно поле NULL или имеет маркер None/-1
         """
         try:
             with self.conn.cursor() as cursor:
-                # ВАЖНО: Берем всех у кого хотя бы одно поле пустое или с маркером
                 cursor.execute("""
                     SELECT id
                     FROM users
@@ -357,6 +341,7 @@ class DataBase:
                         OR company_id IS NULL 
                         OR landing IS NULL 
                         OR landing_id IS NULL
+                        OR country IS NULL
                     ORDER BY id
                     LIMIT 1000
                 """)
@@ -368,7 +353,6 @@ class DataBase:
 
                 print(f"[DB] Найдено {len(users)} пользователей для обработки")
 
-                # Дополнительная диагностика
                 if len(users) > 0:
                     print(
                         f"[DB] Первые 5 ID для обработки: {[u['user_id'] for u in users[:5]]}")
@@ -442,19 +426,22 @@ class DataBase:
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE (company IS NULL OR company_id IS NULL 
-                        OR landing IS NULL OR landing_id IS NULL)
+                        OR landing IS NULL OR landing_id IS NULL OR country IS NULL)
                 """)
                 stats['users_with_null_data'] = cursor.fetchone()[0]
+
+                # Статистика по странам
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE country IS NOT NULL AND country != 'None'
+                """)
+                stats['users_with_country'] = cursor.fetchone()[0]
 
                 return stats
 
         except Exception as e:
             print(f"[DB] Ошибка получения статистики: {e}")
             return {}
-
-
-# Добавьте эти методы в класс DataBase в файле db.py:
-
 
     def get_users_with_null_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
@@ -463,19 +450,18 @@ class DataBase:
         """
         try:
             with self.conn.cursor() as cursor:
-                # Сначала проверим, сколько всего пользователей с NULL
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company IS NULL 
                     OR company_id IS NULL 
                     OR landing IS NULL 
                     OR landing_id IS NULL
+                    OR country IS NULL
                 """)
                 total_with_null = cursor.fetchone()[0]
                 print(
                     f"[DB] Всего пользователей с NULL полями: {total_with_null}")
 
-                # Проверим сколько с маркерами
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company = 'None' 
@@ -487,16 +473,15 @@ class DataBase:
                 print(
                     f"[DB] Пользователей с маркерами None/-1: {with_markers}")
 
-                # Теперь основной запрос - берем тех у кого есть NULL
-                # но НЕ все поля заполнены маркерами
                 cursor.execute("""
-                    SELECT id, company, company_id, landing, landing_id
+                    SELECT id, company, company_id, landing, landing_id, country
                     FROM users
                     WHERE (
                         company IS NULL 
                         OR company_id IS NULL 
                         OR landing IS NULL 
                         OR landing_id IS NULL
+                        OR country IS NULL
                     )
                     AND NOT (
                         company = 'None' 
@@ -516,7 +501,8 @@ class DataBase:
                         "company": row[1],
                         "company_id": row[2],
                         "landing": row[3],
-                        "landing_id": row[4]
+                        "landing_id": row[4],
+                        "country": row[5]
                     })
 
                 print(f"[DB] Найдено {len(users)} пользователей для обработки")
@@ -525,7 +511,7 @@ class DataBase:
                     print(f"[DB] Примеры первых 3 записей:")
                     for u in users[:3]:
                         print(
-                            f"  - ID: {u['user_id']}, company: {u['company']}, company_id: {u['company_id']}, landing: {u['landing']}, landing_id: {u['landing_id']}")
+                            f"  - ID: {u['user_id']}, company: {u['company']}, company_id: {u['company_id']}, landing: {u['landing']}, landing_id: {u['landing_id']}, country: {u['country']}")
 
                 return [{"user_id": u["user_id"]} for u in users]
 
@@ -543,11 +529,9 @@ class DataBase:
             with self.conn.cursor() as cursor:
                 stats = {}
 
-                # Всего пользователей
                 cursor.execute("SELECT COUNT(*) FROM users")
                 stats['total_users'] = cursor.fetchone()[0]
 
-                # Пользователи с полными данными (реальные кампании и лендинги)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company IS NOT NULL 
@@ -561,7 +545,6 @@ class DataBase:
                 """)
                 stats['users_with_full_data'] = cursor.fetchone()[0]
 
-                # Пользователи с маркерами "пусто" (обработаны, но данных нет)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE company = 'None' 
@@ -571,7 +554,6 @@ class DataBase:
                 """)
                 stats['users_marked_as_empty'] = cursor.fetchone()[0]
 
-                # Пользователи с NULL полями (еще не обработаны)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE (
@@ -579,6 +561,7 @@ class DataBase:
                         OR company_id IS NULL 
                         OR landing IS NULL 
                         OR landing_id IS NULL
+                        OR country IS NULL
                     )
                     AND NOT (
                         company = 'None' 
@@ -589,7 +572,6 @@ class DataBase:
                 """)
                 stats['users_not_processed'] = cursor.fetchone()[0]
 
-                # Частично заполненные (есть данные, но не все)
                 cursor.execute("""
                     SELECT COUNT(*) FROM users 
                     WHERE (
@@ -607,7 +589,13 @@ class DataBase:
                 """)
                 stats['users_partially_filled'] = cursor.fetchone()[0]
 
-                # Процентное соотношение
+                # Статистика по странам
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users 
+                    WHERE country IS NOT NULL AND country != 'None'
+                """)
+                stats['users_with_country'] = cursor.fetchone()[0]
+
                 if stats['total_users'] > 0:
                     stats['percent_with_data'] = round(
                         (stats['users_with_full_data'] /
@@ -621,8 +609,11 @@ class DataBase:
                         (stats['users_not_processed'] /
                          stats['total_users']) * 100, 2
                     )
+                    stats['percent_with_country'] = round(
+                        (stats['users_with_country'] /
+                         stats['total_users']) * 100, 2
+                    )
 
-                # Топ кампании (только реальные)
                 cursor.execute("""
                     SELECT company, COUNT(*) as count
                     FROM users 
@@ -637,7 +628,6 @@ class DataBase:
                     {"name": row[0], "count": row[1]} for row in top_campaigns
                 ]
 
-                # Топ лендинги (только реальные)
                 cursor.execute("""
                     SELECT landing, COUNT(*) as count
                     FROM users 
@@ -652,8 +642,46 @@ class DataBase:
                     {"name": row[0], "count": row[1]} for row in top_landings
                 ]
 
+                # Топ страны
+                cursor.execute("""
+                    SELECT country, COUNT(*) as count
+                    FROM users 
+                    WHERE country IS NOT NULL 
+                    AND country != 'None'
+                    GROUP BY country 
+                    ORDER BY count DESC 
+                    LIMIT 10
+                """)
+                top_countries = cursor.fetchall()
+                stats['top_countries'] = [
+                    {"country": row[0], "count": row[1]} for row in top_countries
+                ]
+
                 return stats
 
         except Exception as e:
             print(f"[DB] Ошибка получения детальной статистики: {e}")
             return {}
+
+    def get_user_country(self, user_id: int) -> Optional[str]:
+        """
+        НОВЫЙ МЕТОД: Получает страну пользователя из БД
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT country FROM users WHERE id = %s", (user_id,))
+                result = cursor.fetchone()
+
+                if result:
+                    country = result[0]
+                    print(
+                        f"[DB] Найдена страна для пользователя {user_id}: {country}")
+                    return country
+                else:
+                    print(f"[DB] Пользователь {user_id} не найден")
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения страны: {e}")
+            return None
