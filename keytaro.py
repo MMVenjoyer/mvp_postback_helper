@@ -312,6 +312,50 @@ class KeitaroCampaignService:
         logger.info("=== ЗАВЕРШЕНО: Автопроверка ===")
         return result
 
+    async def get_country_by_sub_id(self, sub_id: str) -> Dict[str, Any]:
+        """
+        Получает страну по sub_id (формат: luqb8e.3a.4t77)
+        """
+        try:
+            logger.info(f"Запрос страны для sub_id: {sub_id}")
+            conversion_data = await self.get_conversion_data(sub_id)
+
+            if conversion_data.get('found'):
+                country = conversion_data.get('country')
+                if country:
+                    logger.info(f"Страна для sub_id {sub_id}: {country}")
+                    return {
+                        "sub_id": sub_id,
+                        "country": country,
+                        "campaign": conversion_data.get('campaign'),
+                        "landing": conversion_data.get('landing'),
+                        "source": "keitaro",
+                        "found": True
+                    }
+                else:
+                    return {
+                        "sub_id": sub_id,
+                        "country": None,
+                        "found": False,
+                        "reason": "Country field is empty"
+                    }
+            else:
+                return {
+                    "sub_id": sub_id,
+                    "country": None,
+                    "found": False,
+                    "reason": conversion_data.get('reason', 'Unknown error')
+                }
+
+        except Exception as e:
+            logger.error(f"Ошибка получения страны для sub_id {sub_id}: {e}")
+            return {
+                "sub_id": sub_id,
+                "country": None,
+                "found": False,
+                "error": str(e)
+            }
+
 
 # Глобальный сервис
 campaign_service = None
