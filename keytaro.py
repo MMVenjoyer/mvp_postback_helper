@@ -444,13 +444,11 @@ async def get_users_status():
         return {"status": "error", "error": str(e)}
 
 
-@campaign_router.get("/country/{user_id}")
-async def get_user_country(user_id: int):
+@campaign_router.get("/country/{sub_id:path}")
+async def get_country_by_subid(sub_id: str):
     """
-    🌍 НОВЫЙ МИКРОСЕРВИС: Получить страну пользователя по ID
-
-    Сначала проверяет БД, если нет - запрашивает из Keitaro и сохраняет
+    🌍 Получить страну по sub_id (формат: luqb8e.3a.4t77)
     """
     async with KeitaroCampaignService() as service:
-        result = await service.get_country_by_user_id(user_id)
+        result = await service.get_country_by_sub_id(sub_id)
         return result
