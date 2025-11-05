@@ -49,9 +49,9 @@ class KeitaroCampaignService:
             logger.error(f"Ошибка получения пользователей: {e}")
             return []
 
-    async def get_conversion_data(self, sub_id_13: str) -> Dict[str, Any]:
+    async def get_conversion_data(self, sub_id: str) -> Dict[str, Any]:
         """
-        ОБНОВЛЕНО: Получает данные конверсии для пользователя из Keitaro API включая страну
+        Получает данные конверсии из Keitaro API по sub_id
         """
         headers = {
             "Api-Key": KEITARO_ADMIN_API_KEY,
@@ -61,18 +61,18 @@ class KeitaroCampaignService:
         payload = {
             "limit": 1,
             "columns": [
-                "sub_id_13",
+                "sub_id",
                 "campaign_id",
                 "campaign",
                 "landing_id",
                 "landing",
-                "country"  # ДОБАВИЛИ СТРАНУ
+                "country"
             ],
             "filters": [
                 {
-                    "name": "sub_id_13",
+                    "name": "sub_id",
                     "operator": "EQUALS",
-                    "expression": sub_id_13
+                    "expression": sub_id
                 }
             ]
         }
@@ -94,18 +94,18 @@ class KeitaroCampaignService:
                         "campaign": row.get("campaign"),
                         "landing_id": row.get("landing_id"),
                         "landing": row.get("landing"),
-                        "country": row.get("country"),  # ДОБАВИЛИ СТРАНУ
+                        "country": row.get("country"),
                         "found": True
                     }
                 else:
                     return {"found": False, "reason": "No data in response"}
             else:
                 logger.warning(
-                    f"API error for sub_id_13 {sub_id_13}: {response.status_code}")
+                    f"API error for sub_id {sub_id}: {response.status_code}")
                 return {"found": False, "reason": f"API error: {response.status_code}"}
 
         except Exception as e:
-            logger.error(f"Request error for sub_id_13 {sub_id_13}: {e}")
+            logger.error(f"Request error for sub_id {sub_id}: {e}")
             return {"found": False, "reason": str(e)}
 
     async def get_country_by_user_id(self, user_id: int) -> Dict[str, Any]:
