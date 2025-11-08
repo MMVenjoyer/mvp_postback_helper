@@ -37,13 +37,12 @@ class KeitaroCampaignService:
 
     def get_users_for_processing(self) -> List[Dict[str, Any]]:
         """
-        Получает пользователей для обработки - только тех, у кого NULL в полях,
-        НО НЕ тех, у кого уже стоят маркеры None/-1
+        ОБНОВЛЕНО: Получает пользователей с sub_id для обработки
         """
         try:
             users = db.get_users_with_null_campaign_landing_data()
             logger.info(
-                f"Найдено {len(users)} пользователей для обработки (без маркеров None/-1)")
+                f"Найдено {len(users)} пользователей для обработки (с sub_id)")
             return users
         except Exception as e:
             logger.error(f"Ошибка получения пользователей: {e}")
@@ -61,12 +60,12 @@ class KeitaroCampaignService:
         payload = {
             "limit": 1,
             "columns": [
-                "sub_id",
                 "campaign_id",
                 "campaign",
                 "landing_id",
                 "landing",
-                "country"
+                # Используем country_flag вместо country для получения кода (US вместо United States)
+                "country_flag"
             ],
             "filters": [
                 {
@@ -87,14 +86,18 @@ class KeitaroCampaignService:
             if response.status_code == 200:
                 data = response.json()
 
+                # Keitaro возвращает rows как массив объектов
                 if data.get("rows") and len(data["rows"]) > 0:
-                    row = data["rows"][0]
+                    row = data["rows"][0]  # Берем первую запись
+
+                    # row - это уже объект с ключами
                     return {
                         "campaign_id": row.get("campaign_id"),
                         "campaign": row.get("campaign"),
                         "landing_id": row.get("landing_id"),
                         "landing": row.get("landing"),
-                        "country": row.get("country"),
+                        # country_flag содержит код страны (US, AE, etc.)
+                        "country": row.get("country_flag"),
                         "found": True
                     }
                 else:
@@ -110,11 +113,10 @@ class KeitaroCampaignService:
 
     async def get_country_by_user_id(self, user_id: int) -> Dict[str, Any]:
         """
-        НОВЫЙ МЕТОД: Получает страну пользователя по его ID
-        Сначала проверяет БД, если нет - запрашивает из Keitaro
+        ОБНОВЛЕНО: Получает страну пользователя через sub_id из БД
         """
         try:
-            # Сначала проверяем БД
+            # Сначала проверяем страну в БД
             country_from_db = db.get_user_country(user_id)
             if country_from_db and country_from_db != 'None':
                 logger.info(
@@ -126,11 +128,19 @@ class KeitaroCampaignService:
                     "found": True
                 }
 
-            # Если в БД нет, запрашиваем из Keitaro
+            # Если в БД нет, получаем sub_id и запрашиваем из Keitaro
+            sub_id = db.get_user_sub_id(user_id)
+            if not sub_id:
+                return {
+                    "user_id": user_id,
+                    "country": None,
+                    "found": False,
+                    "reason": "sub_id not found in database"
+                }
+
             logger.info(
-                f"Страна для пользователя {user_id} не найдена в БД, запрашиваем из Keitaro")
-            sub_id_13 = str(user_id)
-            conversion_data = await self.get_conversion_data(sub_id_13)
+                f"Страна для пользователя {user_id} не найдена в БД, запрашиваем из Keitaro по sub_id: {sub_id}")
+            conversion_data = await self.get_conversion_data(sub_id)
 
             if conversion_data.get('found'):
                 country = conversion_data.get('country')
@@ -177,7 +187,7 @@ class KeitaroCampaignService:
 
     async def process_users_slowly(self, users: List[Dict[str, Any]]):
         """
-        ОБНОВЛЕНО: Обрабатывает пользователей с учетом страны
+        ОБНОВЛЕНО: Обрабатывает пользователей используя sub_id из БД
         """
         total_users = len(users)
         processed = 0
@@ -194,14 +204,22 @@ class KeitaroCampaignService:
                 break
 
             user_id = user['user_id']
-            sub_id_13 = str(user_id)
+            # Получаем sub_id из результата запроса
+            sub_id = user.get('sub_id')
+
+            if not sub_id:
+                logger.warning(
+                    f"⚠️ Пропускаем пользователя {user_id}: отсутствует sub_id")
+                failed += 1
+                processed += 1
+                continue
 
             logger.info(
-                f"Обрабатываем пользователя {user_id} (sub_id_13: {sub_id_13})")
+                f"Обрабатываем пользователя {user_id} (sub_id: {sub_id})")
 
             try:
-                # Получаем данные из Keitaro
-                conversion_data = await self.get_conversion_data(sub_id_13)
+                # Получаем данные из Keitaro используя sub_id
+                conversion_data = await self.get_conversion_data(sub_id)
 
                 if conversion_data.get('found'):
                     # Найдены данные - обновляем БД реальными данными
@@ -211,8 +229,7 @@ class KeitaroCampaignService:
                         company_id=conversion_data.get('campaign_id'),
                         landing=conversion_data.get('landing'),
                         landing_id=conversion_data.get('landing_id'),
-                        country=conversion_data.get(
-                            'country')  # ДОБАВИЛИ СТРАНУ
+                        country=conversion_data.get('country')
                     )
 
                     if result.get('success'):
@@ -224,7 +241,7 @@ class KeitaroCampaignService:
                         logger.error(
                             f"✗ Ошибка обновления {user_id}: {result.get('error')}")
                 else:
-                    # Данные не найдены - ПОМЕЧАЕМ маркерами для исключения из будущих проверок
+                    # Данные не найдены - ПОМЕЧАЕМ маркерами
                     result = db.update_user_campaign_landing_data(
                         user_id,
                         company="None",
@@ -292,7 +309,7 @@ class KeitaroCampaignService:
 
     async def auto_check_sync(self):
         """
-        ОБНОВЛЕНО: Автоматическая проверка каждые 60 минут
+        Автоматическая проверка каждые 60 минут
         Обрабатывает ТОЛЬКО новых пользователей с NULL полями
         """
         logger.info("=== АВТОПРОВЕРКА (60 мин): Поиск новых пользователей ===")
@@ -356,6 +373,40 @@ class KeitaroCampaignService:
                 "error": str(e)
             }
 
+    async def get_full_data_by_sub_id(self, sub_id: str) -> Dict[str, Any]:
+        """
+        НОВЫЙ: Получает полные данные (кампания, лендинг, страна) по sub_id
+        """
+        try:
+            logger.info(f"Запрос полных данных для sub_id: {sub_id}")
+            conversion_data = await self.get_conversion_data(sub_id)
+
+            if conversion_data.get('found'):
+                logger.info(f"Данные для sub_id {sub_id} найдены")
+                return {
+                    "sub_id": sub_id,
+                    "campaign": conversion_data.get('campaign'),
+                    "campaign_id": conversion_data.get('campaign_id'),
+                    "landing": conversion_data.get('landing'),
+                    "landing_id": conversion_data.get('landing_id'),
+                    "country": conversion_data.get('country'),
+                    "found": True
+                }
+            else:
+                return {
+                    "sub_id": sub_id,
+                    "found": False,
+                    "reason": conversion_data.get('reason', 'Unknown error')
+                }
+
+        except Exception as e:
+            logger.error(f"Ошибка получения данных для sub_id {sub_id}: {e}")
+            return {
+                "sub_id": sub_id,
+                "found": False,
+                "error": str(e)
+            }
+
 
 # Глобальный сервис
 campaign_service = None
@@ -364,7 +415,7 @@ auto_check_task = None
 
 async def start_campaign_service():
     """
-    ОБНОВЛЕНО: Запускает сервис с автоматической проверкой каждые 60 минут
+    Запускает сервис с автоматической проверкой каждые 60 минут
     """
     global campaign_service, auto_check_task
     campaign_service = KeitaroCampaignService()
@@ -392,7 +443,6 @@ async def start_campaign_service():
                 break
             except Exception as e:
                 logger.error(f"❌ Ошибка в автоматической синхронизации: {e}")
-                # При ошибке ждем 1 минуту и пробуем снова
                 await asyncio.sleep(60)
 
 
@@ -471,11 +521,27 @@ async def stop_sync():
 
 @campaign_router.get("/campaigns/test-single/{user_id}")
 async def test_single_user(user_id: int):
-    """Тестовый эндпоинт для проверки одного пользователя по его ID"""
+    """
+    ОБНОВЛЕНО: Тестовый эндпоинт для проверки одного пользователя по его ID
+    Теперь использует sub_id из БД
+    """
     async with KeitaroCampaignService() as service:
-        sub_id_13 = str(user_id)
-        result = await service.get_conversion_data(sub_id_13)
-        return {"status": "ok", "user_id": user_id, "sub_id_13": sub_id_13, "data": result}
+        # Получаем sub_id из БД
+        sub_id = db.get_user_sub_id(user_id)
+        if not sub_id:
+            return {
+                "status": "error",
+                "user_id": user_id,
+                "error": "sub_id not found in database"
+            }
+
+        result = await service.get_conversion_data(sub_id)
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "sub_id": sub_id,
+            "data": result
+        }
 
 
 @campaign_router.get("/campaigns/users-status")
@@ -488,11 +554,73 @@ async def get_users_status():
         return {"status": "error", "error": str(e)}
 
 
-@campaign_router.get("/country/{sub_id:path}")
+@campaign_router.get("/country/by-subid/{sub_id:path}")
 async def get_country_by_subid(sub_id: str):
     """
     🌍 Получить страну по sub_id (формат: luqb8e.3a.4t77)
     """
     async with KeitaroCampaignService() as service:
         result = await service.get_country_by_sub_id(sub_id)
+        return result
+
+
+@campaign_router.get("/country/by-userid/{user_id}")
+async def get_country_by_userid(user_id: int):
+    """
+    🌍 НОВЫЙ: Получить страну по user_id (используя sub_id из БД)
+    """
+    async with KeitaroCampaignService() as service:
+        result = await service.get_country_by_user_id(user_id)
+        return result
+
+
+@campaign_router.get("/data/{sub_id:path}")
+async def get_full_data(sub_id: str):
+    """
+    📊 НОВЫЙ: Получить полные данные (кампания, лендинг, страна) по sub_id
+    """
+    async with KeitaroCampaignService() as service:
+        result = await service.get_full_data_by_sub_id(sub_id)
+        return result
+
+
+@campaign_router.get("/test/subid/{sub_id:path}")
+async def test_subid_request(sub_id: str):
+    """
+    🧪 ТЕСТОВЫЙ ЭНДПОИНТ: Проверка получения данных из Keitaro по sub_id
+    Возвращает подробный ответ для отладки
+
+    Примеры использования:
+    - curl http://localhost:8000/api/test/subid/3tse38v.5c.507c
+    - http://localhost:8000/api/test/subid/3tse38v.5c.507c
+    """
+    async with KeitaroCampaignService() as service:
+        logger.info(f"🧪 ТЕСТ: Запрос данных для sub_id: {sub_id}")
+
+        conversion_data = await service.get_conversion_data(sub_id)
+
+        result = {
+            "test_mode": True,
+            "sub_id": sub_id,
+            "timestamp": datetime.now().isoformat(),
+            "keitaro_domain": KEITARO_DOMAIN,
+            "request_status": "success" if conversion_data.get("found") else "not_found",
+            "data": conversion_data
+        }
+
+        if conversion_data.get("found"):
+            logger.info(f"✅ Данные найдены для {sub_id}")
+            result["summary"] = {
+                "campaign": conversion_data.get("campaign"),
+                "campaign_id": conversion_data.get("campaign_id"),
+                "landing": conversion_data.get("landing"),
+                "landing_id": conversion_data.get("landing_id"),
+                # Теперь это код страны (US, AE, etc.)
+                "country": conversion_data.get("country"),
+                "country_note": "country_flag используется для получения кода страны"
+            }
+        else:
+            logger.warning(f"❌ Данные НЕ найдены для {sub_id}")
+            result["error"] = conversion_data.get("reason", "Unknown error")
+
         return result
