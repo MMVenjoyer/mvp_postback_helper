@@ -19,7 +19,7 @@ DB_CONFIG = {
 # KEITARO CONFIGURATION
 # ===========================================
 KEITARO_DOMAIN = os.getenv("KEITARO_DOMAIN", "https://test.com")
-KEITARO_API_KEY = os.getenv("KEITARO_API_KEY", "test")
+KEITARO_ADMIN_API_KEY = os.getenv("KEITARO_API_KEY", "test")
 
 # ===========================================
 # SYNC SETTINGS
