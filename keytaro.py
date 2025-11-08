@@ -6,15 +6,18 @@ import time
 import logging
 from datetime import datetime, timedelta
 from db import DataBase
+from config import (
+    KEITARO_DOMAIN,
+    KEITARO_ADMIN_API_KEY,
+    MAX_USERS_PER_SECOND,
+    DELAY_BETWEEN_REQUESTS,
+    AUTO_CHECK_INTERVAL
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 db = DataBase()
-
-# !!!!! ВАЖНО: ЗАМЕНИТЕ НА ВАШИ РЕАЛЬНЫЕ ДАННЫЕ !!!!!
-KEITARO_DOMAIN = "https://test.com"  # ВАШ ДОМЕН
-KEITARO_ADMIN_API_KEY = "test"        # ВАШ API КЛЮЧ
 
 MAX_USERS_PER_SECOND = 2
 DELAY_BETWEEN_REQUESTS = 0.5
