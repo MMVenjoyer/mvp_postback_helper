@@ -1,6 +1,9 @@
 import psycopg2
+import psycopg2.extras
 from config import DB_CONFIG
 from typing import List, Dict, Any, Optional
+from datetime import datetime
+import json
 
 
 class DataBase:
@@ -8,9 +11,285 @@ class DataBase:
         self.conn = psycopg2.connect(**DB_CONFIG)
         self.conn.autocommit = True
 
+    # ==========================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С ТРАНЗАКЦИЯМИ (НОВЫЕ)
+    # ==========================================
+
+    def create_transaction(
+        self,
+        user_id: int,
+        action: str,
+        sum_amount: float = None,
+        raw_data: dict = None
+    ) -> Dict[str, Any]:
+        """
+        Создает запись о транзакции в таблице transactions
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO transactions (user_id, action, sum, raw_data)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, created_at
+                """, (
+                    user_id,
+                    action,
+                    sum_amount,
+                    json.dumps(raw_data) if raw_data else None
+                ))
+
+                result = cursor.fetchone()
+                transaction_id = result[0]
+                created_at = result[1]
+
+                print(
+                    f"[DB] ✓ Создана транзакция #{transaction_id}: user={user_id}, action={action}, sum={sum_amount}")
+
+                return {
+                    "success": True,
+                    "transaction_id": transaction_id,
+                    "created_at": created_at
+                }
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка создания транзакции: {e}")
+            return {"success": False, "error": str(e)}
+
+    def update_user_event(
+        self,
+        user_id: int,
+        action: str,
+        sum_amount: float = None
+    ) -> Dict[str, Any]:
+        """
+        Обновляет поля событий в таблице users (reg, dep, redep)
+        """
+        try:
+            update_fields = []
+            params = []
+
+            if action == "reg":
+                update_fields = ["reg = TRUE", "reg_time = %s"]
+                params = [datetime.now()]
+
+            elif action == "dep":
+                update_fields = ["dep = TRUE", "dep_time = %s", "dep_sum = %s"]
+                params = [datetime.now(), sum_amount]
+
+            elif action == "redep":
+                update_fields = ["redep = TRUE",
+                                 "redep_time = %s", "redep_sum = %s"]
+                params = [datetime.now(), sum_amount]
+
+            else:
+                # Для кастомных целей просто записываем в транзакции, users не трогаем
+                return {"success": True, "message": "Custom action, only transaction created"}
+
+            params.append(user_id)
+
+            query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
+
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, params)
+
+                if cursor.rowcount > 0:
+                    print(f"[DB] ✓ Обновлен user {user_id}: {action}")
+                    return {"success": True, "updated_rows": cursor.rowcount}
+                else:
+                    print(f"[DB] ✗ Пользователь {user_id} не найден")
+                    return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления события: {e}")
+            return {"success": False, "error": str(e)}
+
+    def process_postback(
+        self,
+        user_id: int,
+        action: str,
+        sum_amount: float = None,
+        raw_data: dict = None
+    ) -> Dict[str, Any]:
+        """
+        Полная обработка постбэка: создает транзакцию + обновляет users
+        """
+        try:
+            # 1. Создаем запись в транзакциях
+            transaction_result = self.create_transaction(
+                user_id=user_id,
+                action=action,
+                sum_amount=sum_amount,
+                raw_data=raw_data
+            )
+
+            if not transaction_result.get("success"):
+                return transaction_result
+
+            # 2. Обновляем поля в users для основных событий
+            user_result = self.update_user_event(
+                user_id=user_id,
+                action=action,
+                sum_amount=sum_amount
+            )
+
+            return {
+                "success": True,
+                "transaction_id": transaction_result.get("transaction_id"),
+                "user_updated": user_result.get("success")
+            }
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обработки постбэка: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_transactions(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Получает историю транзакций пользователя
+        """
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, action, sum, created_at, raw_data
+                    FROM transactions
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (user_id, limit))
+
+                transactions = cursor.fetchall()
+                return [dict(t) for t in transactions]
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка получения транзакций: {e}")
+            return []
+
+    def get_transactions_stats(self) -> Dict[str, Any]:
+        """
+        Получает статистику по транзакциям
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                stats = {}
+
+                # Общее количество транзакций
+                cursor.execute("SELECT COUNT(*) FROM transactions")
+                stats['total_transactions'] = cursor.fetchone()[0]
+
+                # Статистика по действиям
+                cursor.execute("""
+                    SELECT action, COUNT(*) as count, SUM(sum) as total_sum
+                    FROM transactions
+                    GROUP BY action
+                    ORDER BY count DESC
+                """)
+
+                action_stats = cursor.fetchall()
+                stats['by_action'] = [
+                    {
+                        "action": row[0],
+                        "count": row[1],
+                        "total_sum": float(row[2]) if row[2] else 0
+                    }
+                    for row in action_stats
+                ]
+
+                # Статистика по пользователям
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT user_id) FROM transactions
+                """)
+                stats['unique_users'] = cursor.fetchone()[0]
+
+                # Последние транзакции
+                cursor.execute("""
+                    SELECT user_id, action, sum, created_at
+                    FROM transactions
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """)
+
+                recent = cursor.fetchall()
+                stats['recent_transactions'] = [
+                    {
+                        "user_id": row[0],
+                        "action": row[1],
+                        "sum": float(row[2]) if row[2] else None,
+                        "created_at": row[3].isoformat() if row[3] else None
+                    }
+                    for row in recent
+                ]
+
+                return stats
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка получения статистики транзакций: {e}")
+            return {}
+
+    def get_user_events_summary(self, user_id: int) -> Dict[str, Any]:
+        """
+        Получает сводку по событиям пользователя из таблицы users
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT reg, reg_time, dep, dep_time, dep_sum, 
+                           redep, redep_time, redep_sum, subscriber_id
+                    FROM users
+                    WHERE id = %s
+                """, (user_id,))
+
+                result = cursor.fetchone()
+
+                if result:
+                    return {
+                        "user_id": user_id,
+                        "reg": result[0],
+                        "reg_time": result[1].isoformat() if result[1] else None,
+                        "dep": result[2],
+                        "dep_time": result[3].isoformat() if result[3] else None,
+                        "dep_sum": float(result[4]) if result[4] else None,
+                        "redep": result[5],
+                        "redep_time": result[6].isoformat() if result[6] else None,
+                        "redep_sum": float(result[7]) if result[7] else None,
+                        "subscriber_id": result[8]
+                    }
+                else:
+                    return {"error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка получения событий пользователя: {e}")
+            return {"error": str(e)}
+
+    def get_user_by_subscriber_id(self, subscriber_id: str) -> Optional[int]:
+        """
+        НОВЫЙ: Получает user_id по subscriber_id (для постбэков от MVP)
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM users WHERE subscriber_id = %s", (subscriber_id,))
+                result = cursor.fetchone()
+
+                if result:
+                    user_id = result[0]
+                    print(
+                        f"[DB] Найден пользователь {user_id} по subscriber_id={subscriber_id}")
+                    return user_id
+                else:
+                    print(
+                        f"[DB] Пользователь с subscriber_id={subscriber_id} не найден")
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка поиска пользователя по subscriber_id: {e}")
+            return None
+
+    # ==========================================
+    # СТАРЫЕ МЕТОДЫ (для совместимости с Keitaro)
+    # ==========================================
+
     def get_user_sub_id(self, user_id: int) -> Optional[str]:
         """
-        НОВЫЙ: Получает sub_id (sub_3) пользователя из БД
+        Получает sub_id (sub_3) пользователя из БД
         """
         try:
             with self.conn.cursor() as cursor:
@@ -33,7 +312,7 @@ class DataBase:
 
     def get_all_users_with_sub_id(self) -> List[Dict[str, Any]]:
         """
-        ОБНОВЛЕНО: Получает всех пользователей с sub_id из БД
+        Получает всех пользователей с sub_id из БД
         """
         try:
             with self.conn.cursor() as cursor:
@@ -48,7 +327,7 @@ class DataBase:
                 for row in results:
                     users.append({
                         "user_id": row[0],
-                        "sub_id": row[1]  # Теперь возвращаем как sub_id
+                        "sub_id": row[1]
                     })
 
                 print(f"[DB] Найдено {len(users)} пользователей с sub_id")
@@ -164,7 +443,7 @@ class DataBase:
 
     def get_users_without_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
-        ОБНОВЛЕНО: Получает пользователей с sub_id, у которых нет данных кампании
+        Получает пользователей с sub_id, у которых нет данных кампании
         """
         try:
             with self.conn.cursor() as cursor:
@@ -190,7 +469,7 @@ class DataBase:
                 for row in results:
                     users.append({
                         "user_id": row[0],
-                        "sub_id": row[1]  # Добавляем sub_id
+                        "sub_id": row[1]
                     })
 
                 print(f"[DB] Найдено {len(users)} пользователей для обработки")
@@ -207,7 +486,7 @@ class DataBase:
 
     def get_users_with_empty_markers_extended(self) -> List[Dict[str, Any]]:
         """
-        ОБНОВЛЕНО: Получает пользователей с пустыми маркерами для повторной проверки
+        Получает пользователей с пустыми маркерами для повторной проверки
         """
         try:
             with self.conn.cursor() as cursor:
@@ -292,7 +571,7 @@ class DataBase:
 
     def get_users_with_null_campaign_landing_data(self) -> List[Dict[str, Any]]:
         """
-        ОБНОВЛЕНО: Получает пользователей с NULL полями и sub_id
+        Получает пользователей с NULL полями и sub_id
         """
         try:
             with self.conn.cursor() as cursor:
@@ -351,7 +630,7 @@ class DataBase:
                 for row in results:
                     users.append({
                         "user_id": row[0],
-                        "sub_id": row[1],  # Добавили sub_id
+                        "sub_id": row[1],
                         "company": row[2],
                         "company_id": row[3],
                         "landing": row[4],
