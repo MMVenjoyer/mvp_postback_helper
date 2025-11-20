@@ -13,7 +13,7 @@ async def receive_postback(request: Request):
     Поддерживаемые параметры:
     - user_id: Telegram ID пользователя (обязательный)
     - action: тип события (reg, dep, redep, или кастомная цель)
-    - sum: сумма депозита/редепозита
+    - sum: сумма депозита/редепозита (для dep/redep)
     - playerid: MVP Player ID для сверки
 
     Примеры:
@@ -45,14 +45,27 @@ async def receive_postback(request: Request):
         user_id_int = int(user_id)
         print(f"[POSTBACK] user_id: {user_id_int}, action: {action}")
 
-        # Преобразуем sum если есть
-        sum_float = float(sum_amount) if sum_amount else None
-        if sum_float:
-            print(f"[POSTBACK] sum: {sum_float}")
+        # Безопасно преобразуем sum
+        sum_float = None
+
+        # Для reg - sum вообще не нужен, игнорируем
+        if action == "reg":
+            print(f"[POSTBACK] Регистрация - sum не требуется")
+        else:
+            # Для dep/redep/кастомных целей - пытаемся распарсить sum
+            if sum_amount and sum_amount.strip():
+                try:
+                    sum_float = float(sum_amount)
+                    print(f"[POSTBACK] sum: {sum_float}")
+                except ValueError:
+                    print(
+                        f"[POSTBACK] ⚠️ Некорректный формат sum: '{sum_amount}' - устанавливаем None")
+                    sum_float = None
+            else:
+                print(f"[POSTBACK] sum отсутствует или пустой - устанавливаем None")
 
         # Проверяем playerid если пришел
         if playerid:
-            # Можно дополнительно проверить соответствие с subscriber_id в БД
             print(f"[POSTBACK] playerid: {playerid}")
 
         # Обрабатываем постбэк через новый метод БД
