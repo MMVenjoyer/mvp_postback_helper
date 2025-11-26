@@ -20,7 +20,8 @@ DB_CONFIG = {
 # ===========================================
 KEITARO_DOMAIN = os.getenv("KEITARO_DOMAIN", "https://test.com")
 KEITARO_ADMIN_API_KEY = os.getenv("KEITARO_ADMIN_API_KEY", "test")
-
+KEITARO_POSTBACK_URL = os.getenv(
+    "KEITARO_POSTBACK_URL", "https://ytgtech.com/e87f58c/postback")
 # ===========================================
 # SYNC SETTINGS
 # ===========================================
