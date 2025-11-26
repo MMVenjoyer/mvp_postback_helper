@@ -12,7 +12,7 @@ class DataBase:
         self.conn.autocommit = True
 
     # ==========================================
-    # МЕТОДЫ ДЛЯ РАБОТЫ С ТРАНЗАКЦИЯМИ (НОВЫЕ)
+    # МЕТОДЫ ДЛЯ РАБОТЫ С ТРАНЗАКЦИЯМИ
     # ==========================================
 
     def create_transaction(
@@ -62,13 +62,17 @@ class DataBase:
         sum_amount: float = None
     ) -> Dict[str, Any]:
         """
-        Обновляет поля событий в таблице users (reg, dep, redep)
+        Обновляет поля событий в таблице users (ftm, reg, dep, redep)
         """
         try:
             update_fields = []
             params = []
 
-            if action == "reg":
+            if action == "ftm":
+                update_fields = ["ftm_time = %s"]
+                params = [datetime.now()]
+
+            elif action == "reg":
                 update_fields = ["reg = TRUE", "reg_time = %s"]
                 params = [datetime.now()]
 
@@ -231,7 +235,7 @@ class DataBase:
         try:
             with self.conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT reg, reg_time, dep, dep_time, dep_sum, 
+                    SELECT ftm_time, reg, reg_time, dep, dep_time, dep_sum, 
                            redep, redep_time, redep_sum, subscriber_id
                     FROM users
                     WHERE id = %s
@@ -242,15 +246,16 @@ class DataBase:
                 if result:
                     return {
                         "user_id": user_id,
-                        "reg": result[0],
-                        "reg_time": result[1].isoformat() if result[1] else None,
-                        "dep": result[2],
-                        "dep_time": result[3].isoformat() if result[3] else None,
-                        "dep_sum": float(result[4]) if result[4] else None,
-                        "redep": result[5],
-                        "redep_time": result[6].isoformat() if result[6] else None,
-                        "redep_sum": float(result[7]) if result[7] else None,
-                        "subscriber_id": result[8]
+                        "ftm_time": result[0].isoformat() if result[0] else None,
+                        "reg": result[1],
+                        "reg_time": result[2].isoformat() if result[2] else None,
+                        "dep": result[3],
+                        "dep_time": result[4].isoformat() if result[4] else None,
+                        "dep_sum": float(result[5]) if result[5] else None,
+                        "redep": result[6],
+                        "redep_time": result[7].isoformat() if result[7] else None,
+                        "redep_sum": float(result[8]) if result[8] else None,
+                        "subscriber_id": result[9]
                     }
                 else:
                     return {"error": "User not found"}
@@ -261,7 +266,7 @@ class DataBase:
 
     def get_user_by_subscriber_id(self, subscriber_id: str) -> Optional[int]:
         """
-        НОВЫЙ: Получает user_id по subscriber_id (для постбэков от MVP)
+        Получает user_id по subscriber_id (для постбэков от MVP)
         """
         try:
             with self.conn.cursor() as cursor:
@@ -284,7 +289,7 @@ class DataBase:
             return None
 
     # ==========================================
-    # СТАРЫЕ МЕТОДЫ (для совместимости с Keitaro)
+    # МЕТОДЫ ДЛЯ РАБОТЫ С KEITARO
     # ==========================================
 
     def get_user_sub_id(self, user_id: int) -> Optional[str]:
@@ -334,7 +339,7 @@ class DataBase:
                 return users
 
         except Exception as e:
-            print(f"[DB] Ошибка получения пользователей с sub_id: {e}")
+            print(f"[DB] ✗ Ошибка получения пользователей с sub_id: {e}")
             return []
 
     def get_campaign_data_stats(self) -> Dict[str, int]:

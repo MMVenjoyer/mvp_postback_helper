@@ -1,110 +1,171 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from db import DataBase
 
 db = DataBase()
 router = APIRouter()
 
 
-@router.get("/")
-async def receive_postback(request: Request):
+@router.get("/ftm")
+async def ftm_postback(id: int = Query(..., description="User ID")):
     """
-    Принимает постбэки от MVP Project
+    FTM (First Time Message) постбэк
 
-    Поддерживаемые параметры:
-    - user_id: Telegram ID пользователя (обязательный)
-    - action: тип события (reg, dep, redep, или кастомная цель)
-    - sum: сумма депозита/редепозита (для dep/redep)
-    - playerid: MVP Player ID для сверки
+    Параметры:
+    - id: Telegram ID пользователя
 
-    Примеры:
-    - Регистрация: /postback?user_id=123456&action=reg
-    - Депозит: /postback?user_id=123456&action=dep&sum=100.50&playerid=mvp_123
-    - Редеп: /postback?user_id=123456&action=redep&sum=250.00&playerid=mvp_123
-    - Кастомная цель: /postback?user_id=123456&action=payout&sum=50.00
+    Пример: /postback/ftm?id=123456
     """
-    data = dict(request.query_params)
-    print(f"[POSTBACK] Получены данные: {data}")
-
-    # Получаем параметры
-    user_id = data.get("user_id")
-    action = data.get("action")
-    sum_amount = data.get("sum")
-    playerid = data.get("playerid")
-
-    # Валидация обязательных параметров
-    if not user_id:
-        print("[POSTBACK] ✗ Ошибка: отсутствует user_id")
-        return {"status": "error", "error": "Missing user_id"}
-
-    if not action:
-        print("[POSTBACK] ✗ Ошибка: отсутствует action")
-        return {"status": "error", "error": "Missing action"}
+    print(f"[POSTBACK FTM] id: {id}")
 
     try:
-        # Преобразуем user_id в int
-        user_id_int = int(user_id)
-        print(f"[POSTBACK] user_id: {user_id_int}, action: {action}")
-
-        # Безопасно преобразуем sum
-        sum_float = None
-
-        # Для reg - sum вообще не нужен, игнорируем
-        if action == "reg":
-            print(f"[POSTBACK] Регистрация - sum не требуется")
-        else:
-            # Для dep/redep/кастомных целей - пытаемся распарсить sum
-            if sum_amount and sum_amount.strip():
-                try:
-                    sum_float = float(sum_amount)
-                    print(f"[POSTBACK] sum: {sum_float}")
-                except ValueError:
-                    print(
-                        f"[POSTBACK] ⚠️ Некорректный формат sum: '{sum_amount}' - устанавливаем None")
-                    sum_float = None
-            else:
-                print(f"[POSTBACK] sum отсутствует или пустой - устанавливаем None")
-
-        # Проверяем playerid если пришел
-        if playerid:
-            print(f"[POSTBACK] playerid: {playerid}")
-
-        # Обрабатываем постбэк через новый метод БД
         result = db.process_postback(
-            user_id=user_id_int,
-            action=action,
-            sum_amount=sum_float,
-            raw_data=data  # Сохраняем все параметры в raw_data
+            user_id=id,
+            action="ftm",
+            sum_amount=None,
+            raw_data={"id": id, "action": "ftm"}
         )
 
         if result.get("success"):
-            print(f"[POSTBACK] ✓ Постбэк успешно обработан")
-            print(f"[POSTBACK] Transaction ID: {result.get('transaction_id')}")
-            print(f"[POSTBACK] User updated: {result.get('user_updated')}")
-
+            print(f"[POSTBACK FTM] ✓ Успешно обработан для user {id}")
             return {
                 "status": "ok",
-                "user_id": user_id_int,
-                "action": action,
-                "transaction_id": result.get("transaction_id"),
-                "sum": sum_float
+                "user_id": id,
+                "action": "ftm",
+                "transaction_id": result.get("transaction_id")
             }
         else:
-            print(f"[POSTBACK] ✗ Ошибка обработки: {result.get('error')}")
-            return {
-                "status": "error",
-                "error": result.get("error")
-            }
-
-    except ValueError as ve:
-        print(f"[POSTBACK] ✗ ValueError: {ve}")
-        return {"status": "error", "error": f"Invalid parameter format: {str(ve)}"}
+            print(f"[POSTBACK FTM] ✗ Ошибка: {result.get('error')}")
+            return {"status": "error", "error": result.get("error")}
 
     except Exception as e:
-        print(f"[POSTBACK] ✗ Exception: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[POSTBACK FTM] ✗ Exception: {e}")
         return {"status": "error", "error": str(e)}
 
+
+@router.get("/reg")
+async def reg_postback(id: int = Query(..., description="User ID")):
+    """
+    Регистрация пользователя
+
+    Параметры:
+    - id: Telegram ID пользователя
+
+    Пример: /postback/reg?id=123456
+    """
+    print(f"[POSTBACK REG] id: {id}")
+
+    try:
+        result = db.process_postback(
+            user_id=id,
+            action="reg",
+            sum_amount=None,
+            raw_data={"id": id, "action": "reg"}
+        )
+
+        if result.get("success"):
+            print(f"[POSTBACK REG] ✓ Успешно обработан для user {id}")
+            return {
+                "status": "ok",
+                "user_id": id,
+                "action": "reg",
+                "transaction_id": result.get("transaction_id")
+            }
+        else:
+            print(f"[POSTBACK REG] ✗ Ошибка: {result.get('error')}")
+            return {"status": "error", "error": result.get("error")}
+
+    except Exception as e:
+        print(f"[POSTBACK REG] ✗ Exception: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/dep")
+async def dep_postback(
+    id: int = Query(..., description="User ID"),
+    sum: float = Query(..., description="Deposit amount")
+):
+    """
+    Депозит пользователя
+
+    Параметры:
+    - id: Telegram ID пользователя
+    - sum: Сумма депозита
+
+    Пример: /postback/dep?id=123456&sum=100.50
+    """
+    print(f"[POSTBACK DEP] id: {id}, sum: {sum}")
+
+    try:
+        result = db.process_postback(
+            user_id=id,
+            action="dep",
+            sum_amount=sum,
+            raw_data={"id": id, "action": "dep", "sum": sum}
+        )
+
+        if result.get("success"):
+            print(
+                f"[POSTBACK DEP] ✓ Успешно обработан для user {id}, sum={sum}")
+            return {
+                "status": "ok",
+                "user_id": id,
+                "action": "dep",
+                "sum": sum,
+                "transaction_id": result.get("transaction_id")
+            }
+        else:
+            print(f"[POSTBACK DEP] ✗ Ошибка: {result.get('error')}")
+            return {"status": "error", "error": result.get("error")}
+
+    except Exception as e:
+        print(f"[POSTBACK DEP] ✗ Exception: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/redep")
+async def redep_postback(
+    id: int = Query(..., description="User ID"),
+    sum: float = Query(..., description="Redeposit amount")
+):
+    """
+    Редепозит пользователя
+
+    Параметры:
+    - id: Telegram ID пользователя
+    - sum: Сумма редепозита
+
+    Пример: /postback/redep?id=123456&sum=250.00
+    """
+    print(f"[POSTBACK REDEP] id: {id}, sum: {sum}")
+
+    try:
+        result = db.process_postback(
+            user_id=id,
+            action="redep",
+            sum_amount=sum,
+            raw_data={"id": id, "action": "redep", "sum": sum}
+        )
+
+        if result.get("success"):
+            print(
+                f"[POSTBACK REDEP] ✓ Успешно обработан для user {id}, sum={sum}")
+            return {
+                "status": "ok",
+                "user_id": id,
+                "action": "redep",
+                "sum": sum,
+                "transaction_id": result.get("transaction_id")
+            }
+        else:
+            print(f"[POSTBACK REDEP] ✗ Ошибка: {result.get('error')}")
+            return {"status": "error", "error": result.get("error")}
+
+    except Exception as e:
+        print(f"[POSTBACK REDEP] ✗ Exception: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# ====== ВСПОМОГАТЕЛЬНЫЕ ЭНДПОИНТЫ ======
 
 @router.get("/test/{user_id}")
 async def test_postback(user_id: int):
@@ -112,10 +173,7 @@ async def test_postback(user_id: int):
     Тестовый эндпоинт для проверки постбэков
     """
     try:
-        # Получаем сводку по событиям пользователя
         events = db.get_user_events_summary(user_id)
-
-        # Получаем последние транзакции
         transactions = db.get_user_transactions(user_id, limit=10)
 
         return {
@@ -135,10 +193,7 @@ async def get_postback_stats():
     """
     try:
         stats = db.get_transactions_stats()
-        return {
-            "status": "ok",
-            "stats": stats
-        }
+        return {"status": "ok", "stats": stats}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
