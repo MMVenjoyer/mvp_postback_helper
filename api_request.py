@@ -79,6 +79,8 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
     }
 
 
+# Добавь эту функцию в конец api_request.py
+
 async def send_keitaro_postback(subid: str, status: str, payout: float = None, retries=3, delay=60, bot=None, user_id=None):
     """
     Постбэк в Keitaro
@@ -112,6 +114,9 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, r
     result["postback_type"] = f"Keitaro {status.upper()}"
 
     print(f"📤 Постбэк Keitaro ({status}): {result['full_url']}")
-    print(f"Результат: {'✓ OK' if result['ok'] else f'✗ FAIL - {result.get('text')}'}")
+    if result['ok']:
+        print(f"Результат: ✓ OK")
+    else:
+        print(f"Результат: ✗ FAIL - {result.get('text')}")
 
     return result
