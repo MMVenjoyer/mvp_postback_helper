@@ -233,7 +233,7 @@ async def redep_postback(
     sum: float = Query(..., description="Redeposit amount")
 ):
     """
-    Редепозит пользователя
+    Редепозит пользователя (отправляется в Keitaro как dep с суммой)
 
     Параметры:
     - id: Telegram ID пользователя
@@ -244,6 +244,7 @@ async def redep_postback(
     print(f"[POSTBACK REDEP] id: {id}, sum: {sum}")
 
     try:
+        # 1. Записываем в БД как redep
         result = db.process_postback(
             user_id=id,
             action="redep",
@@ -251,22 +252,58 @@ async def redep_postback(
             raw_data={"id": id, "action": "redep", "sum": sum}
         )
 
-        if result.get("success"):
+        if not result.get("success"):
             print(
-                f"[POSTBACK REDEP] ✓ Успешно обработан для user {id}, sum={sum}")
+                f"[POSTBACK REDEP] ✗ Ошибка записи в БД: {result.get('error')}")
+            return {"status": "error", "error": result.get("error")}
+
+        print(f"[POSTBACK REDEP] ✓ Записано в БД для user {id}, sum={sum}")
+
+        # 2. Получаем sub_3 (subid) из БД
+        subid = db.get_user_sub_id(id)
+
+        if not subid:
+            print(
+                f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
             return {
                 "status": "ok",
                 "user_id": id,
                 "action": "redep",
                 "sum": sum,
-                "transaction_id": result.get("transaction_id")
+                "transaction_id": result.get("transaction_id"),
+                "keitaro_postback": "skipped - no subid"
             }
-        else:
-            print(f"[POSTBACK REDEP] ✗ Ошибка: {result.get('error')}")
-            return {"status": "error", "error": result.get("error")}
+
+        # 3. Отправляем постбэк в Keitaro как dep (согласно ТЗ: dep и redep идут как dep)
+        print(
+            f"[POSTBACK REDEP] Отправляем постбэк в Keitaro (как dep) для subid: {subid}, payout: {sum}")
+        keitaro_result = await send_keitaro_postback(
+            subid=subid,
+            status="dep",  # отправляем как dep
+            payout=sum,
+            user_id=id
+        )
+
+        return {
+            "status": "ok",
+            "user_id": id,
+            "action": "redep",
+            "sum": sum,
+            "transaction_id": result.get("transaction_id"),
+            "keitaro_postback": {
+                "sent": keitaro_result.get("ok"),
+                "subid": subid,
+                "status_sent": "dep",  # указываем что отправили как dep
+                "payout": sum,
+                "url": keitaro_result.get("full_url"),
+                "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
+            }
+        }
 
     except Exception as e:
         print(f"[POSTBACK REDEP] ✗ Exception: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "error": str(e)}
 
 
