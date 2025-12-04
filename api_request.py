@@ -79,17 +79,16 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
     }
 
 
-# Добавь эту функцию в конец api_request.py
-
-async def send_keitaro_postback(subid: str, status: str, payout: float = None, retries=3, delay=60, bot=None, user_id=None):
+async def send_keitaro_postback(subid: str, status: str, payout: float = None, tid: int = None, retries=3, delay=60, bot=None, user_id=None):
     """
     Постбэк в Keitaro
-    URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100
+    URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100&tid=4
 
     Параметры:
     - subid: sub_3 из БД
     - status: ftm, reg, dep
     - payout: сумма (опционально, для dep)
+    - tid: ID цели (ftm=4, reg=5, dep=6+)
     """
     from config import KEITARO_POSTBACK_URL
 
@@ -101,6 +100,10 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, r
     # Добавляем payout только если он передан
     if payout is not None:
         params["payout"] = payout
+
+    # Добавляем tid только если он передан
+    if tid is not None:
+        params["tid"] = tid
 
     result = await fetch_with_retry(
         KEITARO_POSTBACK_URL,

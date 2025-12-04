@@ -146,6 +146,29 @@ class DataBase:
             print(f"[DB] ✗ Ошибка обработки постбэка: {e}")
             return {"success": False, "error": str(e)}
 
+    def get_user_deposits_count(self, user_id: int) -> int:
+        """
+        Подсчитывает количество депозитов (dep + redep) пользователя
+        Возвращает количество для вычисления tid
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM transactions 
+                    WHERE user_id = %s 
+                    AND action IN ('dep', 'redep')
+                """, (user_id,))
+
+                count = cursor.fetchone()[0]
+                print(
+                    f"[DB] Найдено {count} депозитов для пользователя {user_id}")
+                return count
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка подсчета депозитов: {e}")
+            return 0
+
     def get_user_transactions(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Получает историю транзакций пользователя
