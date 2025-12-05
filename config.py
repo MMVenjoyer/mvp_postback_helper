@@ -22,6 +22,7 @@ KEITARO_DOMAIN = os.getenv("KEITARO_DOMAIN", "https://test.com")
 KEITARO_ADMIN_API_KEY = os.getenv("KEITARO_ADMIN_API_KEY", "test")
 KEITARO_POSTBACK_URL = os.getenv(
     "KEITARO_POSTBACK_URL", "https://ytgtech.com/e87f58c/postback")
+
 # ===========================================
 # SYNC SETTINGS
 # ===========================================
@@ -34,6 +35,14 @@ AUTO_CHECK_INTERVAL = int(os.getenv("AUTO_CHECK_INTERVAL", 3600))
 # ===========================================
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8000))
+
+# ===========================================
+# TELEGRAM BOT SETTINGS (для логов ошибок)
+# ===========================================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
+CHAT_ID = os.getenv("CHAT_ID", "your_chat_id_here")
+ENABLE_TELEGRAM_LOGS = os.getenv(
+    "ENABLE_TELEGRAM_LOGS", "true").lower() == "true"
 
 # Выводим конфигурацию при загрузке (без пароля и API ключа)
 print("=" * 50)
@@ -55,4 +64,15 @@ print(
 print("-" * 50)
 print(f"API Host: {API_HOST}")
 print(f"API Port: {API_PORT}")
+print("-" * 50)
+print(f"Telegram Bot Enabled: {ENABLE_TELEGRAM_LOGS}")
+if ENABLE_TELEGRAM_LOGS:
+    if BOT_TOKEN != "your_bot_token_here":
+        print(f"Bot Token: {BOT_TOKEN[:10]}...")
+    else:
+        print("Bot Token: ⚠️ НЕ НАСТРОЕН")
+    if CHAT_ID != "your_chat_id_here":
+        print(f"Chat ID: {CHAT_ID}")
+    else:
+        print("Chat ID: ⚠️ НЕ НАСТРОЕН")
 print("=" * 50)

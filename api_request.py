@@ -4,6 +4,7 @@ from datetime import datetime
 from config import *
 from typing import Optional
 from urllib.parse import urlencode
+from logger_bot import send_error_log
 
 
 async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, postback_type=None, user_id=None):
@@ -39,24 +40,67 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
                         last_exception = Exception(
                             f"HTTP {resp.status}: {text[:200]}...")
 
-                        # Логируем HTTP ошибку если есть bot
-                        if bot and postback_type and user_id:
-                            print('pass -1')
+                        # Логируем HTTP ошибку если есть bot и это последняя попытка
+                        if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                            await send_error_log(
+                                error_type="KEITARO_HTTP_ERROR",
+                                error_message=f"HTTP {resp.status} при отправке постбэка",
+                                user_id=user_id,
+                                additional_info={
+                                    "url": full_url,
+                                    "postback_type": postback_type,
+                                    "status_code": resp.status,
+                                    "response": text[:200],
+                                    "attempts": attempt
+                                },
+                                full_traceback=False
+                            )
 
         except asyncio.TimeoutError:
             last_exception = Exception("Таймаут запроса (30 сек)")
-            if bot and postback_type and user_id and attempt == retries:
-                print('pass 0')
+            if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                await send_error_log(
+                    error_type="KEITARO_TIMEOUT",
+                    error_message="Превышено время ожидания ответа от Keitaro",
+                    user_id=user_id,
+                    additional_info={
+                        "url": full_url,
+                        "postback_type": postback_type,
+                        "timeout": "30 сек",
+                        "attempts": attempt
+                    },
+                    full_traceback=False
+                )
 
         except aiohttp.ClientError as e:
             last_exception = Exception(f"Ошибка клиента: {str(e)}")
-            if bot and postback_type and user_id and attempt == retries:
-                print('pass 1')
+            if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                await send_error_log(
+                    error_type="KEITARO_CLIENT_ERROR",
+                    error_message=f"Ошибка HTTP клиента: {str(e)}",
+                    user_id=user_id,
+                    additional_info={
+                        "url": full_url,
+                        "postback_type": postback_type,
+                        "attempts": attempt
+                    },
+                    full_traceback=True
+                )
 
         except Exception as e:
             last_exception = Exception(f"Неизвестная ошибка: {str(e)}")
-            if bot and postback_type and user_id and attempt == retries:
-                print('pass 2')
+            if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                await send_error_log(
+                    error_type="KEITARO_UNKNOWN_ERROR",
+                    error_message=f"Неизвестная ошибка при отправке постбэка: {str(e)}",
+                    user_id=user_id,
+                    additional_info={
+                        "url": full_url,
+                        "postback_type": postback_type,
+                        "attempts": attempt
+                    },
+                    full_traceback=True
+                )
 
         # Ждём перед следующей попыткой
         if attempt < retries:
@@ -64,8 +108,19 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
             await asyncio.sleep(wait_time)
 
     # Финальная ошибка после всех попыток
-    if bot and postback_type and user_id:
-        print('pass 3')
+    if ENABLE_TELEGRAM_LOGS:
+        await send_error_log(
+            error_type="KEITARO_POSTBACK_FAILED",
+            error_message=f"Не удалось отправить постбэк после {retries} попыток",
+            user_id=user_id,
+            additional_info={
+                "url": full_url,
+                "postback_type": postback_type,
+                "last_error": str(last_exception),
+                "total_attempts": retries
+            },
+            full_traceback=False
+        )
 
     return {
         "ok": False,

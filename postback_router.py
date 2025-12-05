@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Request, Query
 from db import DataBase
 from api_request import send_keitaro_postback
+from logger_bot import send_error_log
+from config import ENABLE_TELEGRAM_LOGS
 
 db = DataBase()
 router = APIRouter()
@@ -29,9 +31,23 @@ async def ftm_postback(id: int = Query(..., description="User ID")):
         )
 
         if not result.get("success"):
-            print(
-                f"[POSTBACK FTM] ✗ Ошибка записи в БД: {result.get('error')}")
-            return {"status": "error", "error": result.get("error")}
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[POSTBACK FTM] ✗ Ошибка записи в БД: {error_msg}")
+
+            # Отправляем в Telegram только если это НЕ "User not found"
+            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи FTM в БД: {error_msg}",
+                    user_id=id,
+                    additional_info={
+                        "action": "ftm",
+                        "endpoint": "/postback/ftm"
+                    },
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
 
         print(f"[POSTBACK FTM] ✓ Записано в БД для user {id}")
 
@@ -41,6 +57,7 @@ async def ftm_postback(id: int = Query(..., description="User ID")):
         if not subid:
             print(
                 f"[POSTBACK FTM] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            # НЕ отправляем в Telegram - это ожидаемая ситуация
             return {
                 "status": "ok",
                 "user_id": id,
@@ -77,6 +94,20 @@ async def ftm_postback(id: int = Query(..., description="User ID")):
         print(f"[POSTBACK FTM] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
+
+        # Отправляем в Telegram
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_FTM_EXCEPTION",
+                error_message=f"Необработанная ошибка в FTM постбэке: {str(e)}",
+                user_id=id,
+                additional_info={
+                    "action": "ftm",
+                    "endpoint": "/postback/ftm"
+                },
+                full_traceback=True
+            )
+
         return {"status": "error", "error": str(e)}
 
 
@@ -103,9 +134,23 @@ async def reg_postback(id: int = Query(..., description="User ID")):
         )
 
         if not result.get("success"):
-            print(
-                f"[POSTBACK REG] ✗ Ошибка записи в БД: {result.get('error')}")
-            return {"status": "error", "error": result.get("error")}
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[POSTBACK REG] ✗ Ошибка записи в БД: {error_msg}")
+
+            # Отправляем в Telegram только если это НЕ "User not found"
+            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи REG в БД: {error_msg}",
+                    user_id=id,
+                    additional_info={
+                        "action": "reg",
+                        "endpoint": "/postback/reg"
+                    },
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
 
         print(f"[POSTBACK REG] ✓ Записано в БД для user {id}")
 
@@ -115,6 +160,7 @@ async def reg_postback(id: int = Query(..., description="User ID")):
         if not subid:
             print(
                 f"[POSTBACK REG] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            # НЕ отправляем в Telegram - это ожидаемая ситуация
             return {
                 "status": "ok",
                 "user_id": id,
@@ -151,6 +197,20 @@ async def reg_postback(id: int = Query(..., description="User ID")):
         print(f"[POSTBACK REG] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
+
+        # Отправляем в Telegram
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_REG_EXCEPTION",
+                error_message=f"Необработанная ошибка в REG постбэке: {str(e)}",
+                user_id=id,
+                additional_info={
+                    "action": "reg",
+                    "endpoint": "/postback/reg"
+                },
+                full_traceback=True
+            )
+
         return {"status": "error", "error": str(e)}
 
 
@@ -187,9 +247,25 @@ async def dep_postback(
         )
 
         if not result.get("success"):
-            print(
-                f"[POSTBACK DEP] ✗ Ошибка записи в БД: {result.get('error')}")
-            return {"status": "error", "error": result.get("error")}
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[POSTBACK DEP] ✗ Ошибка записи в БД: {error_msg}")
+
+            # Отправляем в Telegram только если это НЕ "User not found"
+            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи DEP в БД: {error_msg}",
+                    user_id=id,
+                    additional_info={
+                        "action": "dep",
+                        "sum": sum,
+                        "tid": tid_value,
+                        "endpoint": "/postback/dep"
+                    },
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
 
         print(f"[POSTBACK DEP] ✓ Записано в БД для user {id}, sum={sum}")
 
@@ -199,6 +275,7 @@ async def dep_postback(
         if not subid:
             print(
                 f"[POSTBACK DEP] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            # НЕ отправляем в Telegram - это ожидаемая ситуация
             return {
                 "status": "ok",
                 "user_id": id,
@@ -241,6 +318,21 @@ async def dep_postback(
         print(f"[POSTBACK DEP] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
+
+        # Отправляем в Telegram
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_DEP_EXCEPTION",
+                error_message=f"Необработанная ошибка в DEP постбэке: {str(e)}",
+                user_id=id,
+                additional_info={
+                    "action": "dep",
+                    "sum": sum,
+                    "endpoint": "/postback/dep"
+                },
+                full_traceback=True
+            )
+
         return {"status": "error", "error": str(e)}
 
 
@@ -278,9 +370,25 @@ async def redep_postback(
         )
 
         if not result.get("success"):
-            print(
-                f"[POSTBACK REDEP] ✗ Ошибка записи в БД: {result.get('error')}")
-            return {"status": "error", "error": result.get("error")}
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[POSTBACK REDEP] ✗ Ошибка записи в БД: {error_msg}")
+
+            # Отправляем в Telegram только если это НЕ "User not found"
+            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи REDEP в БД: {error_msg}",
+                    user_id=id,
+                    additional_info={
+                        "action": "redep",
+                        "sum": sum,
+                        "tid": tid_value,
+                        "endpoint": "/postback/redep"
+                    },
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
 
         print(f"[POSTBACK REDEP] ✓ Записано в БД для user {id}, sum={sum}")
 
@@ -290,6 +398,7 @@ async def redep_postback(
         if not subid:
             print(
                 f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            # НЕ отправляем в Telegram - это ожидаемая ситуация
             return {
                 "status": "ok",
                 "user_id": id,
@@ -333,6 +442,21 @@ async def redep_postback(
         print(f"[POSTBACK REDEP] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
+
+        # Отправляем в Telegram
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_REDEP_EXCEPTION",
+                error_message=f"Необработанная ошибка в REDEP постбэке: {str(e)}",
+                user_id=id,
+                additional_info={
+                    "action": "redep",
+                    "sum": sum,
+                    "endpoint": "/postback/redep"
+                },
+                full_traceback=True
+            )
+
         return {"status": "error", "error": str(e)}
 
 
