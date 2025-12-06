@@ -8,6 +8,43 @@ db = DataBase()
 router = APIRouter()
 
 
+def parse_sum_parameter(sum_value) -> float:
+    """
+    Безопасно парсит параметр sum.
+    Если значение не может быть преобразовано в число или <= 0, возвращает 59.
+
+    Обрабатывает:
+    - None -> 59
+    - Пустая строка -> 59
+    - "{sumdep}" или любую непарсящуюся строку -> 59
+    - Число <= 0 -> 59
+    - Валидное число > 0 -> это число
+
+    Args:
+        sum_value: значение параметра sum (может быть float, str, None)
+
+    Returns:
+        float: либо переданное значение, либо 59
+    """
+    DEFAULT_SUM = 59.0
+
+    # Если None или пустая строка
+    if sum_value is None or sum_value == "":
+        return DEFAULT_SUM
+
+    # Если это уже число
+    if isinstance(sum_value, (int, float)):
+        return DEFAULT_SUM if sum_value <= 0 else float(sum_value)
+
+    # Пытаемся преобразовать строку в число
+    try:
+        parsed = float(sum_value)
+        return DEFAULT_SUM if parsed <= 0 else parsed
+    except (ValueError, TypeError):
+        # Строка не парсится (например "{sumdep}")
+        return DEFAULT_SUM
+
+
 @router.get("/ftm")
 async def ftm_postback(id: int = Query(..., description="User ID")):
     """
@@ -217,19 +254,25 @@ async def reg_postback(id: int = Query(..., description="User ID")):
 @router.get("/dep")
 async def dep_postback(
     id: int = Query(..., description="User ID"),
-    sum: float = Query(..., description="Deposit amount")
+    sum: str = Query(None, description="Deposit amount (default: 59)")
 ):
     """
     Депозит пользователя
 
     Параметры:
     - id: Telegram ID пользователя
-    - sum: Сумма депозита
+    - sum: Сумма депозита (если не указана или невалидна, используется 59)
     - tid: автоматически 6 + количество предыдущих депозитов
 
-    Пример: /postback/dep?id=123456&sum=100.50
+    Примеры: 
+    - /postback/dep?id=123456&sum=100.50
+    - /postback/dep?id=123456&sum={sumdep} (будет 59)
+    - /postback/dep?id=123456 (будет 59)
     """
-    print(f"[POSTBACK DEP] id: {id}, sum: {sum}")
+    # Парсим и валидируем сумму
+    sum_value = parse_sum_parameter(sum)
+    print(
+        f"[POSTBACK DEP] id: {id}, sum_raw: {sum!r}, sum_parsed: {sum_value}")
 
     try:
         # 1. Получаем количество предыдущих депозитов ДО записи новой транзакции
@@ -242,8 +285,9 @@ async def dep_postback(
         result = db.process_postback(
             user_id=id,
             action="dep",
-            sum_amount=sum,
-            raw_data={"id": id, "action": "dep", "sum": sum, "tid": tid_value}
+            sum_amount=sum_value,
+            raw_data={"id": id, "action": "dep",
+                      "sum": sum_value, "tid": tid_value}
         )
 
         if not result.get("success"):
@@ -258,7 +302,7 @@ async def dep_postback(
                     user_id=id,
                     additional_info={
                         "action": "dep",
-                        "sum": sum,
+                        "sum": sum_value,
                         "tid": tid_value,
                         "endpoint": "/postback/dep"
                     },
@@ -267,7 +311,7 @@ async def dep_postback(
 
             return {"status": "error", "error": error_msg}
 
-        print(f"[POSTBACK DEP] ✓ Записано в БД для user {id}, sum={sum}")
+        print(f"[POSTBACK DEP] ✓ Записано в БД для user {id}, sum={sum_value}")
 
         # 3. Получаем sub_3 (subid) из БД
         subid = db.get_user_sub_id(id)
@@ -280,7 +324,7 @@ async def dep_postback(
                 "status": "ok",
                 "user_id": id,
                 "action": "dep",
-                "sum": sum,
+                "sum": sum_value,
                 "tid": tid_value,
                 "transaction_id": result.get("transaction_id"),
                 "keitaro_postback": "skipped - no subid"
@@ -288,11 +332,11 @@ async def dep_postback(
 
         # 4. Отправляем постбэк в Keitaro с суммой и tid
         print(
-            f"[POSTBACK DEP] Отправляем постбэк в Keitaro для subid: {subid}, payout: {sum}, tid: {tid_value}")
+            f"[POSTBACK DEP] Отправляем постбэк в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
             status="dep",
-            payout=sum,
+            payout=sum_value,
             tid=tid_value,
             user_id=id
         )
@@ -301,13 +345,13 @@ async def dep_postback(
             "status": "ok",
             "user_id": id,
             "action": "dep",
-            "sum": sum,
+            "sum": sum_value,
             "tid": tid_value,
             "transaction_id": result.get("transaction_id"),
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
                 "subid": subid,
-                "payout": sum,
+                "payout": sum_value,
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
@@ -339,19 +383,25 @@ async def dep_postback(
 @router.get("/redep")
 async def redep_postback(
     id: int = Query(..., description="User ID"),
-    sum: float = Query(..., description="Redeposit amount")
+    sum: str = Query(None, description="Redeposit amount (default: 59)")
 ):
     """
     Редепозит пользователя (отправляется в Keitaro как dep с суммой и tid)
 
     Параметры:
     - id: Telegram ID пользователя
-    - sum: Сумма редепозита
+    - sum: Сумма редепозита (если не указана или невалидна, используется 59)
     - tid: автоматически 6 + количество предыдущих депозитов (включая dep и redep)
 
-    Пример: /postback/redep?id=123456&sum=250.00
+    Примеры:
+    - /postback/redep?id=123456&sum=250.00
+    - /postback/redep?id=123456&sum={sumdep} (будет 59)
+    - /postback/redep?id=123456 (будет 59)
     """
-    print(f"[POSTBACK REDEP] id: {id}, sum: {sum}")
+    # Парсим и валидируем сумму
+    sum_value = parse_sum_parameter(sum)
+    print(
+        f"[POSTBACK REDEP] id: {id}, sum_raw: {sum!r}, sum_parsed: {sum_value}")
 
     try:
         # 1. Получаем количество предыдущих депозитов ДО записи новой транзакции
@@ -364,9 +414,9 @@ async def redep_postback(
         result = db.process_postback(
             user_id=id,
             action="redep",
-            sum_amount=sum,
+            sum_amount=sum_value,
             raw_data={"id": id, "action": "redep",
-                      "sum": sum, "tid": tid_value}
+                      "sum": sum_value, "tid": tid_value}
         )
 
         if not result.get("success"):
@@ -381,7 +431,7 @@ async def redep_postback(
                     user_id=id,
                     additional_info={
                         "action": "redep",
-                        "sum": sum,
+                        "sum": sum_value,
                         "tid": tid_value,
                         "endpoint": "/postback/redep"
                     },
@@ -390,7 +440,8 @@ async def redep_postback(
 
             return {"status": "error", "error": error_msg}
 
-        print(f"[POSTBACK REDEP] ✓ Записано в БД для user {id}, sum={sum}")
+        print(
+            f"[POSTBACK REDEP] ✓ Записано в БД для user {id}, sum={sum_value}")
 
         # 3. Получаем sub_3 (subid) из БД
         subid = db.get_user_sub_id(id)
@@ -403,7 +454,7 @@ async def redep_postback(
                 "status": "ok",
                 "user_id": id,
                 "action": "redep",
-                "sum": sum,
+                "sum": sum_value,
                 "tid": tid_value,
                 "transaction_id": result.get("transaction_id"),
                 "keitaro_postback": "skipped - no subid"
@@ -411,11 +462,11 @@ async def redep_postback(
 
         # 4. Отправляем постбэк в Keitaro как dep (согласно ТЗ: dep и redep идут как dep)
         print(
-            f"[POSTBACK REDEP] Отправляем постбэк в Keitaro (как dep) для subid: {subid}, payout: {sum}, tid: {tid_value}")
+            f"[POSTBACK REDEP] Отправляем постбэк в Keitaro (как dep) для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
             status="dep",  # отправляем как dep
-            payout=sum,
+            payout=sum_value,
             tid=tid_value,
             user_id=id
         )
@@ -424,14 +475,14 @@ async def redep_postback(
             "status": "ok",
             "user_id": id,
             "action": "redep",
-            "sum": sum,
+            "sum": sum_value,
             "tid": tid_value,
             "transaction_id": result.get("transaction_id"),
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
                 "subid": subid,
                 "status_sent": "dep",  # указываем что отправили как dep
-                "payout": sum,
+                "payout": sum_value,
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
