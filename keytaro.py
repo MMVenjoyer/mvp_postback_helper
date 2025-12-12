@@ -54,6 +54,7 @@ class KeitaroCampaignService:
     async def get_conversion_data(self, sub_id: str) -> Dict[str, Any]:
         """
         Получает данные конверсии из Keitaro API по sub_id
+        Возвращает: кампанию, лендинг, страну, город, устройство, ОС, браузер
         """
         headers = {
             "Api-Key": KEITARO_ADMIN_API_KEY,
@@ -67,8 +68,11 @@ class KeitaroCampaignService:
                 "campaign",
                 "landing_id",
                 "landing",
-                # Используем country_flag вместо country для получения кода (US вместо United States)
-                "country_flag"
+                "country_flag",  # Код страны (US вместо United States)
+                "city",          # Город
+                "device_type",   # Тип устройства (desktop, mobile, tablet)
+                "os",            # Операционная система
+                "browser"        # Браузер
             ],
             "filters": [
                 {
@@ -99,8 +103,13 @@ class KeitaroCampaignService:
                         "campaign": row.get("campaign"),
                         "landing_id": row.get("landing_id"),
                         "landing": row.get("landing"),
-                        # country_flag содержит код страны (US, AE, etc.)
+                        # код страны (US, AE, etc.)
                         "country": row.get("country_flag"),
+                        "city": row.get("city"),  # город
+                        # desktop, mobile, tablet
+                        "device_type": row.get("device_type"),
+                        "os": row.get("os"),  # операционная система
+                        "browser": row.get("browser"),  # браузер
                         "found": True
                     }
                 else:
@@ -334,51 +343,55 @@ class KeitaroCampaignService:
 
     async def get_country_by_sub_id(self, sub_id: str) -> Dict[str, Any]:
         """
-        Получает страну по sub_id (формат: luqb8e.3a.4t77)
+        ОБНОВЛЕНО: Получает страну + дополнительные данные по sub_id
         """
         try:
-            logger.info(f"Запрос страны для sub_id: {sub_id}")
+            logger.info(f"Запрос данных для sub_id: {sub_id}")
             conversion_data = await self.get_conversion_data(sub_id)
 
             if conversion_data.get('found'):
                 country = conversion_data.get('country')
-                if country:
-                    logger.info(f"Страна для sub_id {sub_id}: {country}")
-                    return {
-                        "sub_id": sub_id,
-                        "country": country,
-                        "campaign": conversion_data.get('campaign'),
-                        "landing": conversion_data.get('landing'),
-                        "source": "keitaro",
-                        "found": True
-                    }
-                else:
-                    return {
-                        "sub_id": sub_id,
-                        "country": None,
-                        "found": False,
-                        "reason": "Country field is empty"
-                    }
+                city = conversion_data.get('city')
+                device_type = conversion_data.get('device_type')
+
+                logger.info(
+                    f"Данные для sub_id {sub_id}: country={country}, city={city}, device={device_type}")
+                return {
+                    "sub_id": sub_id,
+                    "country": country,
+                    "city": city,
+                    "device_type": device_type,
+                    "os": conversion_data.get('os'),
+                    "browser": conversion_data.get('browser'),
+                    "campaign": conversion_data.get('campaign'),
+                    "landing": conversion_data.get('landing'),
+                    "source": "keitaro",
+                    "found": True
+                }
             else:
                 return {
                     "sub_id": sub_id,
                     "country": None,
+                    "city": None,
+                    "device_type": None,
                     "found": False,
                     "reason": conversion_data.get('reason', 'Unknown error')
                 }
 
         except Exception as e:
-            logger.error(f"Ошибка получения страны для sub_id {sub_id}: {e}")
+            logger.error(f"Ошибка получения данных для sub_id {sub_id}: {e}")
             return {
                 "sub_id": sub_id,
                 "country": None,
+                "city": None,
+                "device_type": None,
                 "found": False,
                 "error": str(e)
             }
 
     async def get_full_data_by_sub_id(self, sub_id: str) -> Dict[str, Any]:
         """
-        НОВЫЙ: Получает полные данные (кампания, лендинг, страна) по sub_id
+        ОБНОВЛЕНО: Получает полные данные (кампания, лендинг, страна, город, устройство) по sub_id
         """
         try:
             logger.info(f"Запрос полных данных для sub_id: {sub_id}")
@@ -393,6 +406,10 @@ class KeitaroCampaignService:
                     "landing": conversion_data.get('landing'),
                     "landing_id": conversion_data.get('landing_id'),
                     "country": conversion_data.get('country'),
+                    "city": conversion_data.get('city'),
+                    "device_type": conversion_data.get('device_type'),
+                    "os": conversion_data.get('os'),
+                    "browser": conversion_data.get('browser'),
                     "found": True
                 }
             else:
@@ -560,7 +577,7 @@ async def get_users_status():
 @campaign_router.get("/country/by-subid/{sub_id:path}")
 async def get_country_by_subid(sub_id: str):
     """
-    🌍 Получить страну по sub_id (формат: luqb8e.3a.4t77)
+    🌍 ОБНОВЛЕНО: Получить страну + город + устройство по sub_id (формат: luqb8e.3a.4t77)
     """
     async with KeitaroCampaignService() as service:
         result = await service.get_country_by_sub_id(sub_id)
@@ -580,7 +597,7 @@ async def get_country_by_userid(user_id: int):
 @campaign_router.get("/data/{sub_id:path}")
 async def get_full_data(sub_id: str):
     """
-    📊 НОВЫЙ: Получить полные данные (кампания, лендинг, страна) по sub_id
+    📊 ОБНОВЛЕНО: Получить полные данные (кампания, лендинг, страна, город, устройство) по sub_id
     """
     async with KeitaroCampaignService() as service:
         result = await service.get_full_data_by_sub_id(sub_id)
@@ -590,8 +607,8 @@ async def get_full_data(sub_id: str):
 @campaign_router.get("/test/subid/{sub_id:path}")
 async def test_subid_request(sub_id: str):
     """
-    🧪 ТЕСТОВЫЙ ЭНДПОИНТ: Проверка получения данных из Keitaro по sub_id
-    Возвращает подробный ответ для отладки
+    🧪 ОБНОВЛЕНО: Тестовый эндпоинт для проверки получения данных из Keitaro по sub_id
+    Возвращает подробный ответ для отладки, включая город и устройство
 
     Примеры использования:
     - curl http://localhost:8000/api/test/subid/3tse38v.5c.507c
@@ -618,9 +635,12 @@ async def test_subid_request(sub_id: str):
                 "campaign_id": conversion_data.get("campaign_id"),
                 "landing": conversion_data.get("landing"),
                 "landing_id": conversion_data.get("landing_id"),
-                # Теперь это код страны (US, AE, etc.)
                 "country": conversion_data.get("country"),
-                "country_note": "country_flag используется для получения кода страны"
+                "city": conversion_data.get("city"),
+                "device_type": conversion_data.get("device_type"),
+                "os": conversion_data.get("os"),
+                "browser": conversion_data.get("browser"),
+                "note": "Расширенные данные: страна, город, устройство, ОС, браузер"
             }
         else:
             logger.warning(f"❌ Данные НЕ найдены для {sub_id}")
