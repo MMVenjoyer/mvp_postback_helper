@@ -12,8 +12,8 @@ from datetime import datetime
 from typing import Dict, Any
 
 # Конфигурация (замените на свои данные)
-KEITARO_DOMAIN = "https://ytgtech.com"  # Ваш домен Keitaro
-KEITARO_ADMIN_API_KEY = "a3087a02038972201d55ab50b1d40143"  # Ваш API ключ
+KEITARO_DOMAIN = ""  # Ваш домен Keitaro
+KEITARO_ADMIN_API_KEY = ""  # Ваш API ключ
 
 # Тестовые sub_id для проверки
 TEST_SUB_IDS = [
