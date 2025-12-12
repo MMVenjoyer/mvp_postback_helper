@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Query
 from db import DataBase
 from api_request import send_keitaro_postback
 from logger_bot import send_error_log
@@ -257,7 +257,8 @@ async def dep_postback(
     sum: str = Query(None, description="Deposit amount (default: 59)")
 ):
     """
-    Депозит пользователя
+    Депозит пользователя (первый депозит)
+    Отправляет событие SALE в Keitaro
 
     Параметры:
     - id: Telegram ID пользователя
@@ -330,12 +331,12 @@ async def dep_postback(
                 "keitaro_postback": "skipped - no subid"
             }
 
-        # 4. Отправляем постбэк в Keitaro с суммой и tid
+        # 4. Отправляем постбэк в Keitaro как SALE (первый депозит)
         print(
-            f"[POSTBACK DEP] Отправляем постбэк в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+            f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
-            status="dep",
+            status="sale",  # Первый депозит = событие SALE
             payout=sum_value,
             tid=tid_value,
             user_id=id
@@ -351,6 +352,7 @@ async def dep_postback(
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
                 "subid": subid,
+                "status_sent": "sale",  # Указываем что отправили событие SALE
                 "payout": sum_value,
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
@@ -386,7 +388,8 @@ async def redep_postback(
     sum: str = Query(None, description="Redeposit amount (default: 59)")
 ):
     """
-    Редепозит пользователя (отправляется в Keitaro как dep с суммой и tid)
+    Редепозит пользователя (повторный депозит)
+    Отправляет событие DEP в Keitaro
 
     Параметры:
     - id: Telegram ID пользователя
@@ -460,12 +463,12 @@ async def redep_postback(
                 "keitaro_postback": "skipped - no subid"
             }
 
-        # 4. Отправляем постбэк в Keitaro как dep (согласно ТЗ: dep и redep идут как dep)
+        # 4. Отправляем постбэк в Keitaro как DEP (повторный депозит)
         print(
-            f"[POSTBACK REDEP] Отправляем постбэк в Keitaro (как dep) для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+            f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
-            status="dep",  # отправляем как dep
+            status="dep",  # Повторный депозит = событие DEP
             payout=sum_value,
             tid=tid_value,
             user_id=id
@@ -481,7 +484,7 @@ async def redep_postback(
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
                 "subid": subid,
-                "status_sent": "dep",  # указываем что отправили как dep
+                "status_sent": "dep",  # Указываем что отправили событие DEP
                 "payout": sum_value,
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
