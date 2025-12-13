@@ -40,7 +40,7 @@ async def get_conversion_data_extended(sub_id: str) -> Dict[str, Any]:
             "landing",
             "country_flag",  # Код страны (US вместо United States)
             "city",          # Город
-            "device_type",   # Тип устройства (desktop, mobile, tablet)
+            "device_model",   # Тип устройства (desktop, mobile, tablet)
             "os",            # Операционная система
             "browser"        # Браузер
         ],
@@ -83,7 +83,7 @@ async def get_conversion_data_extended(sub_id: str) -> Dict[str, Any]:
                         f"   ├─ Landing: {row.get('landing')} (ID: {row.get('landing_id')})")
                     print(f"   ├─ 🌍 Country: {row.get('country_flag')}")
                     print(f"   ├─ 🏙️  City: {row.get('city')}")
-                    print(f"   ├─ 📱 Device Type: {row.get('device_type')}")
+                    print(f"   ├─ 📱 Device Type: {row.get('device_model')}")
                     print(f"   ├─ 💻 OS: {row.get('os')}")
                     print(f"   └─ 🌐 Browser: {row.get('browser')}")
 
@@ -94,7 +94,7 @@ async def get_conversion_data_extended(sub_id: str) -> Dict[str, Any]:
                         "landing": row.get("landing"),
                         "country": row.get("country_flag"),
                         "city": row.get("city"),
-                        "device_type": row.get("device_type"),
+                        "device_model": row.get("device_model"),
                         "os": row.get("os"),
                         "browser": row.get("browser"),
                         "found": True
@@ -169,7 +169,7 @@ async def test_multiple_sub_ids():
                 print(f"\n📍 {r['sub_id']}:")
                 print(f"   Country: {data.get('country')}")
                 print(f"   City: {data.get('city')}")
-                print(f"   Device: {data.get('device_type')}")
+                print(f"   Device: {data.get('device_model')}")
                 print(f"   OS: {data.get('os')}")
                 print(f"   Browser: {data.get('browser')}")
 

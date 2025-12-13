@@ -70,7 +70,7 @@ class KeitaroCampaignService:
                 "landing",
                 "country_flag",  # Код страны (US вместо United States)
                 "city",          # Город
-                "device_type",   # Тип устройства (desktop, mobile, tablet)
+                "device_model",   # Тип устройства (desktop, mobile, tablet)
                 "os",            # Операционная система
                 "browser"        # Браузер
             ],
@@ -107,7 +107,7 @@ class KeitaroCampaignService:
                         "country": row.get("country_flag"),
                         "city": row.get("city"),  # город
                         # desktop, mobile, tablet
-                        "device_type": row.get("device_type"),
+                        "device_type": row.get("device_model"),
                         "os": row.get("os"),  # операционная система
                         "browser": row.get("browser"),  # браузер
                         "found": True
