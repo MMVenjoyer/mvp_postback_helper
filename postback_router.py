@@ -149,25 +149,47 @@ async def ftm_postback(id: int = Query(..., description="User ID")):
 
 
 @router.get("/reg")
-async def reg_postback(id: int = Query(..., description="User ID")):
+async def reg_postback(
+    id: int = Query(..., description="User ID"),
+    trader_id: str = Query(None, description="Trader ID from MVP platform")
+):
     """
     Регистрация пользователя
 
     Параметры:
     - id: Telegram ID пользователя
+    - trader_id: ID трейдера из платформы MVP (опционально)
     - tid: автоматически 5
 
-    Пример: /postback/reg?id=123456
+    Примеры: 
+    - /postback/reg?id=123456
+    - /postback/reg?id=123456&trader_id=TRD_12345
     """
-    print(f"[POSTBACK REG] id: {id}")
+    print(f"[POSTBACK REG] id: {id}, trader_id: {trader_id}")
 
     try:
-        # 1. Записываем в БД
+        # 1. Если передан trader_id, сохраняем его в БД
+        trader_saved = False
+        if trader_id:
+            trader_result = db.update_user_trader_id(id, trader_id)
+            if trader_result.get("success"):
+                print(
+                    f"[POSTBACK REG] ✓ trader_id сохранен для user {id}: {trader_id}")
+                trader_saved = True
+            else:
+                print(
+                    f"[POSTBACK REG] ⚠️ Не удалось сохранить trader_id: {trader_result.get('error')}")
+
+        # 2. Записываем в БД событие регистрации
+        raw_data = {"id": id, "action": "reg"}
+        if trader_id:
+            raw_data["trader_id"] = trader_id
+
         result = db.process_postback(
             user_id=id,
             action="reg",
             sum_amount=None,
-            raw_data={"id": id, "action": "reg"}
+            raw_data=raw_data
         )
 
         if not result.get("success"):
@@ -182,6 +204,7 @@ async def reg_postback(id: int = Query(..., description="User ID")):
                     user_id=id,
                     additional_info={
                         "action": "reg",
+                        "trader_id": trader_id,
                         "endpoint": "/postback/reg"
                     },
                     full_traceback=True
@@ -191,7 +214,7 @@ async def reg_postback(id: int = Query(..., description="User ID")):
 
         print(f"[POSTBACK REG] ✓ Записано в БД для user {id}")
 
-        # 2. Получаем sub_3 (subid) из БД
+        # 3. Получаем sub_3 (subid) из БД
         subid = db.get_user_sub_id(id)
 
         if not subid:
@@ -202,11 +225,12 @@ async def reg_postback(id: int = Query(..., description="User ID")):
                 "status": "ok",
                 "user_id": id,
                 "action": "reg",
+                "trader_id": trader_id if trader_saved else None,
                 "transaction_id": result.get("transaction_id"),
                 "keitaro_postback": "skipped - no subid"
             }
 
-        # 3. Отправляем постбэк в Keitaro с tid=5
+        # 4. Отправляем постбэк в Keitaro с tid=5
         print(
             f"[POSTBACK REG] Отправляем постбэк в Keitaro для subid: {subid}, tid=5")
         keitaro_result = await send_keitaro_postback(
@@ -220,6 +244,7 @@ async def reg_postback(id: int = Query(..., description="User ID")):
             "status": "ok",
             "user_id": id,
             "action": "reg",
+            "trader_id": trader_id if trader_saved else None,
             "transaction_id": result.get("transaction_id"),
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
@@ -243,6 +268,7 @@ async def reg_postback(id: int = Query(..., description="User ID")):
                 user_id=id,
                 additional_info={
                     "action": "reg",
+                    "trader_id": trader_id,
                     "endpoint": "/postback/reg"
                 },
                 full_traceback=True

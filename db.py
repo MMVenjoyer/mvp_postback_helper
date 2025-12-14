@@ -304,7 +304,7 @@ class DataBase:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT ftm_time, reg, reg_time, dep, dep_time, dep_sum, 
-                               redep, redep_time, redep_sum, subscriber_id
+                               redep, redep_time, redep_sum, subscriber_id, trader_id
                         FROM users
                         WHERE id = %s
                     """, (user_id,))
@@ -323,7 +323,8 @@ class DataBase:
                             "redep": result[6],
                             "redep_time": result[7].isoformat() if result[7] else None,
                             "redep_sum": float(result[8]) if result[8] else None,
-                            "subscriber_id": result[9]
+                            "subscriber_id": result[9],
+                            "trader_id": result[10]
                         }
                     else:
                         return {"error": "User not found"}
@@ -355,6 +356,74 @@ class DataBase:
 
         except Exception as e:
             print(f"[DB] Ошибка поиска пользователя по subscriber_id: {e}")
+            return None
+
+    # ==========================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С TRADER_ID
+    # ==========================================
+
+    def update_user_trader_id(self, user_id: int, trader_id: str) -> Dict[str, Any]:
+        """
+        Обновляет trader_id пользователя в БД
+
+        Args:
+            user_id: ID пользователя в Telegram
+            trader_id: ID трейдера из платформы MVP
+
+        Returns:
+            Dict с результатом операции
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE users SET trader_id = %s WHERE id = %s",
+                        (trader_id, user_id)
+                    )
+
+                    if cursor.rowcount > 0:
+                        print(
+                            f"[DB] ✓ Обновлен trader_id для user {user_id}: {trader_id}")
+                        return {"success": True, "updated_rows": cursor.rowcount}
+                    else:
+                        print(f"[DB] ✗ Пользователь {user_id} не найден")
+                        return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления trader_id: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_trader_id(self, user_id: int) -> Optional[str]:
+        """
+        Получает trader_id пользователя из БД
+
+        Args:
+            user_id: ID пользователя в Telegram
+
+        Returns:
+            trader_id или None если не найден
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT trader_id FROM users WHERE id = %s",
+                        (user_id,)
+                    )
+                    result = cursor.fetchone()
+
+                    if result and result[0]:
+                        trader_id = result[0]
+                        print(
+                            f"[DB] Найден trader_id для пользователя {user_id}: {trader_id}")
+                        return trader_id
+                    else:
+                        print(
+                            f"[DB] trader_id не найден для пользователя {user_id}")
+                        return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения trader_id: {e}")
             return None
 
     # ==========================================
