@@ -9,20 +9,42 @@ from contextlib import contextmanager
 
 
 class DataBase:
+    """
+    Singleton-подобный класс для работы с PostgreSQL через connection pool.
+    Используется один экземпляр на всё приложение.
+    """
+    _instance = None
+    _pool = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self):
         """
-        Инициализация connection pool для надежной работы с PostgreSQL
+        Инициализация connection pool для надежной работы с PostgreSQL.
+        Создается только один раз благодаря singleton паттерну.
         """
+        if self._initialized:
+            return
+
         try:
-            self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
+            self._pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
-                maxconn=20,  # Максимум 20 одновременных соединений
+                maxconn=20,
                 **DB_CONFIG
             )
             print("[DB] ✓ Connection pool создан успешно")
+            self._initialized = True
         except Exception as e:
             print(f"[DB] ✗ Ошибка создания connection pool: {e}")
             raise
+
+    @property
+    def connection_pool(self):
+        return self._pool
 
     @contextmanager
     def get_connection(self):
@@ -31,7 +53,7 @@ class DataBase:
         """
         conn = None
         try:
-            conn = self.connection_pool.getconn()
+            conn = self._pool.getconn()
             conn.autocommit = True
             yield conn
         except Exception as e:
@@ -39,15 +61,229 @@ class DataBase:
             raise
         finally:
             if conn:
-                self.connection_pool.putconn(conn)
+                self._pool.putconn(conn)
 
     def close_all_connections(self):
         """
         Закрыть все соединения в пуле (для graceful shutdown)
         """
-        if hasattr(self, 'connection_pool') and self.connection_pool:
-            self.connection_pool.closeall()
+        if self._pool:
+            self._pool.closeall()
             print("[DB] ✓ Все соединения закрыты")
+            DataBase._instance = None
+            DataBase._pool = None
+
+    # ==========================================
+    # МЕТОДЫ ДЛЯ СОЗДАНИЯ ПОЛЬЗОВАТЕЛЕЙ
+    # ==========================================
+
+    def create_user_if_not_exists(
+        self,
+        user_id: int,
+        subscriber_id: str = None,
+        trader_id: str = None,
+        clickid_chatterfry: str = None
+    ) -> Dict[str, Any]:
+        """
+        Создает пользователя в БД если его еще нет.
+
+        Args:
+            user_id: Telegram ID пользователя
+            subscriber_id: UUID идентификатор (опционально)
+            trader_id: ID трейдера из платформы (опционально)
+            clickid_chatterfry: Click ID из трекера (опционально)
+
+        Returns:
+            Dict с результатом: created (bool), user_id, existed (bool)
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Проверяем существование пользователя
+                    cursor.execute(
+                        "SELECT id FROM users WHERE id = %s", (user_id,))
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        print(f"[DB] Пользователь {user_id} уже существует")
+                        return {
+                            "success": True,
+                            "created": False,
+                            "existed": True,
+                            "user_id": user_id
+                        }
+
+                    # Создаем нового пользователя с минимальными данными
+                    cursor.execute("""
+                        INSERT INTO users (id, subscriber_id, trader_id, clickid_chatterfry, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        RETURNING id
+                    """, (
+                        user_id,
+                        subscriber_id,
+                        trader_id,
+                        clickid_chatterfry,
+                        datetime.now()
+                    ))
+
+                    result = cursor.fetchone()
+
+                    if result:
+                        print(f"[DB] ✓ Создан новый пользователь {user_id}")
+                        return {
+                            "success": True,
+                            "created": True,
+                            "existed": False,
+                            "user_id": user_id
+                        }
+                    else:
+                        # Был race condition, пользователь уже создан
+                        return {
+                            "success": True,
+                            "created": False,
+                            "existed": True,
+                            "user_id": user_id
+                        }
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка создания пользователя: {e}")
+            return {"success": False, "error": str(e)}
+
+    def ensure_user_exists(
+        self,
+        user_id: int = None,
+        subscriber_id: str = None,
+        trader_id: str = None,
+        clickid_chatterfry: str = None
+    ) -> Dict[str, Any]:
+        """
+        Гарантирует что пользователь существует в БД.
+        Ищет по user_id или subscriber_id, создает если не найден.
+
+        Returns:
+            Dict с user_id и статусом
+        """
+        try:
+            # Сначала пытаемся найти существующего пользователя
+            found_user_id = None
+
+            if user_id:
+                with self.get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE id = %s", (user_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            found_user_id = result[0]
+
+            # Если не нашли по user_id, ищем по subscriber_id
+            if not found_user_id and subscriber_id:
+                found_user_id = self.get_user_by_subscriber_id(subscriber_id)
+
+            # Если пользователь найден - возвращаем его
+            if found_user_id:
+                return {
+                    "success": True,
+                    "user_id": found_user_id,
+                    "created": False,
+                    "existed": True
+                }
+
+            # Если user_id не передан и пользователь не найден - ошибка
+            if not user_id:
+                return {
+                    "success": False,
+                    "error": "Cannot create user without user_id"
+                }
+
+            # Создаем нового пользователя
+            return self.create_user_if_not_exists(
+                user_id=user_id,
+                subscriber_id=subscriber_id,
+                trader_id=trader_id,
+                clickid_chatterfry=clickid_chatterfry
+            )
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка в ensure_user_exists: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С CLICKID
+    # ==========================================
+
+    def update_user_clickid(self, user_id: int, clickid_chatterfry: str) -> Dict[str, Any]:
+        """
+        Обновляет clickid_chatterfry пользователя.
+        Обновляет только если поле пустое (не перезаписывает существующее).
+
+        Args:
+            user_id: ID пользователя
+            clickid_chatterfry: Click ID из трекера Chatterfry
+
+        Returns:
+            Dict с результатом операции
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Обновляем только если clickid_chatterfry пустой
+                    cursor.execute("""
+                        UPDATE users 
+                        SET clickid_chatterfry = %s 
+                        WHERE id = %s 
+                        AND (clickid_chatterfry IS NULL OR clickid_chatterfry = '')
+                    """, (clickid_chatterfry, user_id))
+
+                    if cursor.rowcount > 0:
+                        print(
+                            f"[DB] ✓ Обновлен clickid_chatterfry для user {user_id}: {clickid_chatterfry}")
+                        return {"success": True, "updated": True}
+                    else:
+                        # Проверяем, существует ли пользователь
+                        cursor.execute(
+                            "SELECT clickid_chatterfry FROM users WHERE id = %s",
+                            (user_id,)
+                        )
+                        result = cursor.fetchone()
+
+                        if result:
+                            existing_clickid = result[0]
+                            if existing_clickid:
+                                print(
+                                    f"[DB] clickid_chatterfry уже установлен для user {user_id}: {existing_clickid}")
+                                return {"success": True, "updated": False, "reason": "already_set", "existing": existing_clickid}
+                            else:
+                                return {"success": True, "updated": False, "reason": "no_change"}
+                        else:
+                            print(f"[DB] Пользователь {user_id} не найден")
+                            return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления clickid_chatterfry: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_clickid(self, user_id: int) -> Optional[str]:
+        """
+        Получает clickid_chatterfry пользователя из БД
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT clickid_chatterfry FROM users WHERE id = %s",
+                        (user_id,)
+                    )
+                    result = cursor.fetchone()
+
+                    if result and result[0]:
+                        return result[0]
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения clickid_chatterfry: {e}")
+            return None
 
     # ==========================================
     # МЕТОДЫ ДЛЯ РАБОТЫ С ТРАНЗАКЦИЯМИ
@@ -127,7 +363,6 @@ class DataBase:
                     params = [datetime.now(), sum_amount]
 
                 else:
-                    # Для кастомных целей просто записываем в транзакции, users не трогаем
                     return {"success": True, "message": "Custom action, only transaction created"}
 
                 params.append(user_id)
@@ -190,7 +425,6 @@ class DataBase:
     def get_user_deposits_count(self, user_id: int) -> int:
         """
         Подсчитывает количество депозитов (dep + redep) пользователя
-        Возвращает количество для вычисления tid
         """
         try:
             with self.get_connection() as conn:
@@ -242,11 +476,9 @@ class DataBase:
                 stats = {}
 
                 with conn.cursor() as cursor:
-                    # Общее количество транзакций
                     cursor.execute("SELECT COUNT(*) FROM transactions")
                     stats['total_transactions'] = cursor.fetchone()[0]
 
-                    # Статистика по действиям
                     cursor.execute("""
                         SELECT action, COUNT(*) as count, SUM(sum) as total_sum
                         FROM transactions
@@ -264,13 +496,10 @@ class DataBase:
                         for row in action_stats
                     ]
 
-                    # Статистика по пользователям
-                    cursor.execute("""
-                        SELECT COUNT(DISTINCT user_id) FROM transactions
-                    """)
+                    cursor.execute(
+                        "SELECT COUNT(DISTINCT user_id) FROM transactions")
                     stats['unique_users'] = cursor.fetchone()[0]
 
-                    # Последние транзакции
                     cursor.execute("""
                         SELECT user_id, action, sum, created_at
                         FROM transactions
@@ -304,7 +533,8 @@ class DataBase:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT ftm_time, reg, reg_time, dep, dep_time, dep_sum, 
-                               redep, redep_time, redep_sum, subscriber_id, trader_id
+                               redep, redep_time, redep_sum, subscriber_id, trader_id,
+                               clickid_chatterfry, sub_3
                         FROM users
                         WHERE id = %s
                     """, (user_id,))
@@ -324,7 +554,9 @@ class DataBase:
                             "redep_time": result[7].isoformat() if result[7] else None,
                             "redep_sum": float(result[8]) if result[8] else None,
                             "subscriber_id": result[9],
-                            "trader_id": result[10]
+                            "trader_id": result[10],
+                            "clickid_chatterfry": result[11],
+                            "sub_3": result[12]
                         }
                     else:
                         return {"error": "User not found"}
@@ -335,13 +567,15 @@ class DataBase:
 
     def get_user_by_subscriber_id(self, subscriber_id: str) -> Optional[int]:
         """
-        Получает user_id по subscriber_id (для постбэков от MVP)
+        Получает user_id по subscriber_id (UUID формат: 1cd38701-7e6e-4ce7-8161-9ce3011a0cfb)
         """
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT id FROM users WHERE subscriber_id = %s", (subscriber_id,))
+                        "SELECT id FROM users WHERE subscriber_id = %s",
+                        (subscriber_id,)
+                    )
                     result = cursor.fetchone()
 
                     if result:
@@ -358,6 +592,54 @@ class DataBase:
             print(f"[DB] Ошибка поиска пользователя по subscriber_id: {e}")
             return None
 
+    def find_user_by_any_id(
+        self,
+        user_id: int = None,
+        subscriber_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ищет пользователя по любому из идентификаторов.
+        Возвращает user_id и способ нахождения.
+
+        Args:
+            user_id: Telegram ID (числовой)
+            subscriber_id: UUID идентификатор
+
+        Returns:
+            Dict с user_id и found_by или None
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Сначала ищем по user_id (приоритет)
+                    if user_id:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE id = %s", (user_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            print(f"[DB] Найден пользователь по id={user_id}")
+                            return {"user_id": result[0], "found_by": "user_id"}
+
+                    # Затем ищем по subscriber_id
+                    if subscriber_id:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE subscriber_id = %s",
+                            (subscriber_id,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            print(
+                                f"[DB] Найден пользователь по subscriber_id={subscriber_id}")
+                            return {"user_id": result[0], "found_by": "subscriber_id"}
+
+                    print(
+                        f"[DB] Пользователь не найден: id={user_id}, subscriber_id={subscriber_id}")
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка поиска пользователя: {e}")
+            return None
+
     # ==========================================
     # МЕТОДЫ ДЛЯ РАБОТЫ С TRADER_ID
     # ==========================================
@@ -365,13 +647,6 @@ class DataBase:
     def update_user_trader_id(self, user_id: int, trader_id: str) -> Dict[str, Any]:
         """
         Обновляет trader_id пользователя в БД
-
-        Args:
-            user_id: ID пользователя в Telegram
-            trader_id: ID трейдера из платформы MVP
-
-        Returns:
-            Dict с результатом операции
         """
         try:
             with self.get_connection() as conn:
@@ -396,12 +671,6 @@ class DataBase:
     def get_user_trader_id(self, user_id: int) -> Optional[str]:
         """
         Получает trader_id пользователя из БД
-
-        Args:
-            user_id: ID пользователя в Telegram
-
-        Returns:
-            trader_id или None если не найден
         """
         try:
             with self.get_connection() as conn:
@@ -413,14 +682,8 @@ class DataBase:
                     result = cursor.fetchone()
 
                     if result and result[0]:
-                        trader_id = result[0]
-                        print(
-                            f"[DB] Найден trader_id для пользователя {user_id}: {trader_id}")
-                        return trader_id
-                    else:
-                        print(
-                            f"[DB] trader_id не найден для пользователя {user_id}")
-                        return None
+                        return result[0]
+                    return None
 
         except Exception as e:
             print(f"[DB] Ошибка получения trader_id: {e}")
@@ -526,8 +789,6 @@ class DataBase:
         try:
             with self.get_connection() as conn:
                 print(f"[DB UPDATE] Начинаем обновление user_id={user_id}")
-                print(
-                    f"[DB UPDATE] Данные: company={company}, company_id={company_id}, landing={landing}, landing_id={landing_id}, country={country}")
 
                 update_fields = []
                 params = []
@@ -553,30 +814,17 @@ class DataBase:
                     params.append(country)
 
                 if not update_fields:
-                    print(f"[DB UPDATE] Нет полей для обновления!")
                     return {"success": False, "error": "No fields to update"}
 
                 params.append(user_id)
                 query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s"
 
-                print(f"[DB UPDATE] SQL: {query}")
-                print(f"[DB UPDATE] Параметры: {params}")
-
                 with conn.cursor() as cursor:
                     cursor.execute(query, params)
-
-                    cursor.execute("""
-                        SELECT company, company_id, landing, landing_id, country
-                        FROM users WHERE id = %s
-                    """, (user_id,))
-                    result = cursor.fetchone()
 
                     if cursor.rowcount > 0:
                         print(
                             f"[DB UPDATE] ✓ Успешно обновлен user_id={user_id}")
-                        if result:
-                            print(
-                                f"[DB UPDATE] Новые значения: company={result[0]}, company_id={result[1]}, landing={result[2]}, landing_id={result[3]}, country={result[4]}")
                         return {"success": True, "updated_rows": cursor.rowcount}
                     else:
                         print(
@@ -586,8 +834,6 @@ class DataBase:
         except Exception as e:
             print(
                 f"[DB UPDATE] ✗ Исключение при обновлении user_id={user_id}: {e}")
-            import traceback
-            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     def get_users_without_campaign_landing_data(self) -> List[Dict[str, Any]]:
@@ -624,11 +870,6 @@ class DataBase:
 
                     print(
                         f"[DB] Найдено {len(users)} пользователей для обработки")
-
-                    if len(users) > 0:
-                        print(
-                            f"[DB] Первые 5 для обработки: {[(u['user_id'], u['sub_id']) for u in users[:5]]}")
-
                     return users
 
         except Exception as e:
@@ -730,34 +971,7 @@ class DataBase:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT COUNT(*) FROM users 
-                        WHERE sub_3 IS NOT NULL 
-                        AND sub_3 != ''
-                        AND (
-                            company IS NULL 
-                            OR company_id IS NULL 
-                            OR landing IS NULL 
-                            OR landing_id IS NULL
-                            OR country IS NULL
-                        )
-                    """)
-                    total_with_null = cursor.fetchone()[0]
-                    print(
-                        f"[DB] Всего пользователей с NULL полями: {total_with_null}")
-
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM users 
-                        WHERE company = 'None' 
-                        AND company_id = -1 
-                        AND landing = 'None' 
-                        AND landing_id = -1
-                    """)
-                    with_markers = cursor.fetchone()[0]
-                    print(
-                        f"[DB] Пользователей с маркерами None/-1: {with_markers}")
-
-                    cursor.execute("""
-                        SELECT id, sub_3, company, company_id, landing, landing_id, country
+                        SELECT id, sub_3
                         FROM users
                         WHERE 
                             sub_3 IS NOT NULL 
@@ -784,29 +998,15 @@ class DataBase:
                     for row in results:
                         users.append({
                             "user_id": row[0],
-                            "sub_id": row[1],
-                            "company": row[2],
-                            "company_id": row[3],
-                            "landing": row[4],
-                            "landing_id": row[5],
-                            "country": row[6]
+                            "sub_id": row[1]
                         })
 
                     print(
                         f"[DB] Найдено {len(users)} пользователей для обработки")
-
-                    if len(users) > 0:
-                        print(f"[DB] Примеры первых 3 записей:")
-                        for u in users[:3]:
-                            print(
-                                f"  - ID: {u['user_id']}, sub_id: {u['sub_id']}, company: {u['company']}, country: {u['country']}")
-
                     return [{"user_id": u["user_id"], "sub_id": u["sub_id"]} for u in users]
 
         except Exception as e:
             print(f"[DB] Ошибка получения пользователей с NULL полями: {e}")
-            import traceback
-            traceback.print_exc()
             return []
 
     def get_detailed_users_stats(self) -> Dict[str, Any]:
@@ -845,38 +1045,10 @@ class DataBase:
 
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
-                        WHERE (
-                            company IS NULL 
-                            OR company_id IS NULL 
-                            OR landing IS NULL 
-                            OR landing_id IS NULL
-                            OR country IS NULL
-                        )
-                        AND NOT (
-                            company = 'None' 
-                            OR company_id = -1 
-                            OR landing = 'None' 
-                            OR landing_id = -1
-                        )
+                        WHERE clickid_chatterfry IS NOT NULL 
+                        AND clickid_chatterfry != ''
                     """)
-                    stats['users_not_processed'] = cursor.fetchone()[0]
-
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM users 
-                        WHERE (
-                            (company IS NOT NULL AND company != 'None')
-                            OR (company_id IS NOT NULL AND company_id != -1)
-                            OR (landing IS NOT NULL AND landing != 'None')
-                            OR (landing_id IS NOT NULL AND landing_id != -1)
-                        )
-                        AND NOT (
-                            company IS NOT NULL AND company != 'None'
-                            AND company_id IS NOT NULL AND company_id != -1
-                            AND landing IS NOT NULL AND landing != 'None'
-                            AND landing_id IS NOT NULL AND landing_id != -1
-                        )
-                    """)
-                    stats['users_partially_filled'] = cursor.fetchone()[0]
+                    stats['users_with_clickid'] = cursor.fetchone()[0]
 
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
@@ -889,24 +1061,15 @@ class DataBase:
                             (stats['users_with_full_data'] /
                              stats['total_users']) * 100, 2
                         )
-                        stats['percent_marked_empty'] = round(
-                            (stats['users_marked_as_empty'] /
-                             stats['total_users']) * 100, 2
-                        )
-                        stats['percent_not_processed'] = round(
-                            (stats['users_not_processed'] /
-                             stats['total_users']) * 100, 2
-                        )
-                        stats['percent_with_country'] = round(
-                            (stats['users_with_country'] /
+                        stats['percent_with_clickid'] = round(
+                            (stats['users_with_clickid'] /
                              stats['total_users']) * 100, 2
                         )
 
                     cursor.execute("""
                         SELECT company, COUNT(*) as count
                         FROM users 
-                        WHERE company IS NOT NULL 
-                        AND company != 'None'
+                        WHERE company IS NOT NULL AND company != 'None'
                         GROUP BY company 
                         ORDER BY count DESC 
                         LIMIT 5
@@ -917,24 +1080,9 @@ class DataBase:
                     ]
 
                     cursor.execute("""
-                        SELECT landing, COUNT(*) as count
-                        FROM users 
-                        WHERE landing IS NOT NULL 
-                        AND landing != 'None'
-                        GROUP BY landing 
-                        ORDER BY count DESC 
-                        LIMIT 5
-                    """)
-                    top_landings = cursor.fetchall()
-                    stats['top_landings'] = [
-                        {"name": row[0], "count": row[1]} for row in top_landings
-                    ]
-
-                    cursor.execute("""
                         SELECT country, COUNT(*) as count
                         FROM users 
-                        WHERE country IS NOT NULL 
-                        AND country != 'None'
+                        WHERE country IS NOT NULL AND country != 'None'
                         GROUP BY country 
                         ORDER BY count DESC 
                         LIMIT 10
@@ -962,14 +1110,60 @@ class DataBase:
                     result = cursor.fetchone()
 
                     if result:
-                        country = result[0]
-                        print(
-                            f"[DB] Найдена страна для пользователя {user_id}: {country}")
-                        return country
-                    else:
-                        print(f"[DB] Пользователь {user_id} не найден")
-                        return None
+                        return result[0]
+                    return None
 
         except Exception as e:
             print(f"[DB] Ошибка получения страны: {e}")
             return None
+
+    def check_duplicate_transaction(
+        self,
+        user_id: int,
+        action: str,
+        sum_amount: float = None,
+        time_window_seconds: int = 60
+    ) -> bool:
+        """
+        Проверяет наличие дублирующей транзакции в заданном временном окне.
+        Помогает избежать дублей при повторных запросах.
+
+        Args:
+            user_id: ID пользователя
+            action: Тип действия (ftm, reg, dep, redep)
+            sum_amount: Сумма (для dep/redep)
+            time_window_seconds: Временное окно в секундах
+
+        Returns:
+            True если дубликат найден, False если нет
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    if sum_amount is not None:
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM transactions 
+                            WHERE user_id = %s 
+                            AND action = %s 
+                            AND sum = %s
+                            AND created_at > NOW() - INTERVAL '%s seconds'
+                        """, (user_id, action, sum_amount, time_window_seconds))
+                    else:
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM transactions 
+                            WHERE user_id = %s 
+                            AND action = %s 
+                            AND created_at > NOW() - INTERVAL '%s seconds'
+                        """, (user_id, action, time_window_seconds))
+
+                    count = cursor.fetchone()[0]
+
+                    if count > 0:
+                        print(
+                            f"[DB] ⚠️ Найден дубликат транзакции: user={user_id}, action={action}, sum={sum_amount}")
+                        return True
+                    return False
+
+        except Exception as e:
+            print(f"[DB] Ошибка проверки дубликата: {e}")
+            return False
