@@ -24,6 +24,14 @@ KEITARO_POSTBACK_URL = os.getenv(
     "KEITARO_POSTBACK_URL", "https://ytgtech.com/e87f58c/postback")
 
 # ===========================================
+# CHATTERFY CONFIGURATION
+# ===========================================
+CHATTERFY_POSTBACK_URL = os.getenv(
+    "CHATTERFY_POSTBACK_URL",
+    "https://api.chatterfy.ai/api/postbacks/3bdc8be1-76d1-4312-9842-c68e7f88f9c8/tracker-postback"
+)
+
+# ===========================================
 # SYNC SETTINGS
 # ===========================================
 MAX_USERS_PER_SECOND = int(os.getenv("MAX_USERS_PER_SECOND", 2))
@@ -56,6 +64,9 @@ print(f"DB Password: {'*' * len(DB_CONFIG['password'])}")
 print("-" * 50)
 print(f"Keitaro Domain: {KEITARO_DOMAIN}")
 print(f"Keitaro API Key: {KEITARO_ADMIN_API_KEY[:10]}...")
+print(f"Keitaro Postback URL: {KEITARO_POSTBACK_URL}")
+print("-" * 50)
+print(f"Chatterfy Postback URL: {CHATTERFY_POSTBACK_URL}")
 print("-" * 50)
 print(f"Max Users/Second: {MAX_USERS_PER_SECOND}")
 print(f"Delay Between Requests: {DELAY_BETWEEN_REQUESTS}s")

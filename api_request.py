@@ -178,3 +178,49 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
         print(f"Результат: ✗ FAIL - {result.get('text')}")
 
     return result
+
+
+async def send_chatterfy_postback(
+    clickid: str,
+    sumdep: float,
+    previous_dep: float,
+    retries: int = 3,
+    delay: int = 60,
+    user_id: int = None
+):
+    """
+    Постбэк в Chatterfy для отправки информации о депозитах
+    URL: https://api.chatterfy.ai/api/postbacks/3bdc8be1-76d1-4312-9842-c68e7f88f9c8/tracker-postback
+
+    Параметры:
+    - clickid: clickid_chatterfry из БД
+    - sumdep: общая сумма всех депозитов пользователя
+    - previous_dep: сумма текущей транзакции
+    """
+    from config import CHATTERFY_POSTBACK_URL
+
+    params = {
+        "tracker.event": "sumdep",
+        "clickid": clickid,
+        "sumdep": sumdep,
+        "previous_dep": previous_dep
+    }
+
+    result = await fetch_with_retry(
+        CHATTERFY_POSTBACK_URL,
+        params=params,
+        retries=retries,
+        delay=delay,
+        bot=None,
+        postback_type="Chatterfy_SUMDEP",
+        user_id=user_id
+    )
+    result["postback_type"] = "Chatterfy SUMDEP"
+
+    print(f"📤 Постбэк Chatterfy (sumdep): {result['full_url']}")
+    if result['ok']:
+        print(f"Результат: ✓ OK")
+    else:
+        print(f"Результат: ✗ FAIL - {result.get('text')}")
+
+    return result
