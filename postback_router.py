@@ -137,15 +137,13 @@ async def find_user_for_deposit(
 async def ftm_postback(
     id: int = Query(..., description="Telegram User ID"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (optional)"),
+    subscriber_id: str = Query(None, description="UUID subscriber ID (optional)"),
     trader_id: str = Query(None, description="Trader ID (optional)")
 ):
     """
     FTM (First Time Message) постбэк
     """
-    print(
-        f"[POSTBACK FTM] id: {id}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
+    print(f"[POSTBACK FTM] id: {id}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
 
     try:
         user_result = await ensure_user_and_update_clickid(
@@ -157,8 +155,7 @@ async def ftm_postback(
 
         if not user_result.get("success"):
             error_msg = user_result.get('error', 'Unknown error')
-            print(
-                f"[POSTBACK FTM] ✗ Ошибка создания/поиска пользователя: {error_msg}")
+            print(f"[POSTBACK FTM] ✗ Ошибка создания/поиска пользователя: {error_msg}")
             return {"status": "error", "error": error_msg}
 
         user_created = user_result.get("created", False)
@@ -166,8 +163,7 @@ async def ftm_postback(
             print(f"[POSTBACK FTM] ✓ Создан новый пользователь {id}")
 
         if db.check_duplicate_transaction(id, "ftm", time_window_seconds=30):
-            print(
-                f"[POSTBACK FTM] ⚠️ Дубликат транзакции для user {id}, пропускаем")
+            print(f"[POSTBACK FTM] ⚠️ Дубликат транзакции для user {id}, пропускаем")
             return {
                 "status": "duplicate",
                 "user_id": id,
@@ -197,8 +193,7 @@ async def ftm_postback(
                     error_type="POSTBACK_DB_ERROR",
                     error_message=f"Ошибка записи FTM в БД: {error_msg}",
                     user_id=id,
-                    additional_info={
-                        "action": "ftm", "endpoint": "/postback/ftm", "clickid": clickid},
+                    additional_info={"action": "ftm", "endpoint": "/postback/ftm", "clickid": clickid},
                     full_traceback=True
                 )
 
@@ -209,8 +204,7 @@ async def ftm_postback(
         subid = db.get_user_sub_id(id)
 
         if not subid:
-            print(
-                f"[POSTBACK FTM] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            print(f"[POSTBACK FTM] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
             return {
                 "status": "ok",
                 "user_id": id,
@@ -220,8 +214,7 @@ async def ftm_postback(
                 "keitaro_postback": "skipped - no subid"
             }
 
-        print(
-            f"[POSTBACK FTM] Отправляем постбэк в Keitaro для subid: {subid}, tid=4")
+        print(f"[POSTBACK FTM] Отправляем постбэк в Keitaro для subid: {subid}, tid=4")
         keitaro_result = await send_keitaro_postback(subid=subid, status="ftm", tid=4, user_id=id)
 
         return {
@@ -249,8 +242,7 @@ async def ftm_postback(
                 error_type="POSTBACK_FTM_EXCEPTION",
                 error_message=f"Необработанная ошибка в FTM постбэке: {str(e)}",
                 user_id=id,
-                additional_info={"action": "ftm",
-                                 "endpoint": "/postback/ftm", "clickid": clickid},
+                additional_info={"action": "ftm", "endpoint": "/postback/ftm", "clickid": clickid},
                 full_traceback=True
             )
 
@@ -262,14 +254,12 @@ async def reg_postback(
     id: int = Query(..., description="Telegram User ID"),
     trader_id: str = Query(None, description="Trader ID from MVP platform"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (optional)")
+    subscriber_id: str = Query(None, description="UUID subscriber ID (optional)")
 ):
     """
     Регистрация пользователя
     """
-    print(
-        f"[POSTBACK REG] id: {id}, trader_id: {trader_id}, clickid: {clickid}, subscriber_id: {subscriber_id}")
+    print(f"[POSTBACK REG] id: {id}, trader_id: {trader_id}, clickid: {clickid}, subscriber_id: {subscriber_id}")
 
     try:
         user_result = await ensure_user_and_update_clickid(
@@ -281,8 +271,7 @@ async def reg_postback(
 
         if not user_result.get("success"):
             error_msg = user_result.get('error', 'Unknown error')
-            print(
-                f"[POSTBACK REG] ✗ Ошибка создания/поиска пользователя: {error_msg}")
+            print(f"[POSTBACK REG] ✗ Ошибка создания/поиска пользователя: {error_msg}")
             return {"status": "error", "error": error_msg}
 
         user_created = user_result.get("created", False)
@@ -294,12 +283,10 @@ async def reg_postback(
             trader_result = db.update_user_trader_id(id, trader_id)
             trader_saved = trader_result.get("success", False)
             if trader_saved:
-                print(
-                    f"[POSTBACK REG] ✓ trader_id обновлен для user {id}: {trader_id}")
+                print(f"[POSTBACK REG] ✓ trader_id обновлен для user {id}: {trader_id}")
 
         if db.check_duplicate_transaction(id, "reg", time_window_seconds=30):
-            print(
-                f"[POSTBACK REG] ⚠️ Дубликат транзакции для user {id}, пропускаем")
+            print(f"[POSTBACK REG] ⚠️ Дубликат транзакции для user {id}, пропускаем")
             return {
                 "status": "duplicate",
                 "user_id": id,
@@ -316,8 +303,7 @@ async def reg_postback(
         if trader_id:
             raw_data["trader_id"] = trader_id
 
-        result = db.process_postback(
-            user_id=id, action="reg", sum_amount=None, raw_data=raw_data)
+        result = db.process_postback(user_id=id, action="reg", sum_amount=None, raw_data=raw_data)
 
         if not result.get("success"):
             error_msg = result.get('error', 'Unknown error')
@@ -328,8 +314,7 @@ async def reg_postback(
                     error_type="POSTBACK_DB_ERROR",
                     error_message=f"Ошибка записи REG в БД: {error_msg}",
                     user_id=id,
-                    additional_info={"action": "reg", "trader_id": trader_id,
-                                     "clickid": clickid, "endpoint": "/postback/reg"},
+                    additional_info={"action": "reg", "trader_id": trader_id, "clickid": clickid, "endpoint": "/postback/reg"},
                     full_traceback=True
                 )
 
@@ -340,8 +325,7 @@ async def reg_postback(
         subid = db.get_user_sub_id(id)
 
         if not subid:
-            print(
-                f"[POSTBACK REG] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
+            print(f"[POSTBACK REG] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
             return {
                 "status": "ok",
                 "user_id": id,
@@ -352,8 +336,7 @@ async def reg_postback(
                 "keitaro_postback": "skipped - no subid"
             }
 
-        print(
-            f"[POSTBACK REG] Отправляем постбэк в Keitaro для subid: {subid}, tid=5")
+        print(f"[POSTBACK REG] Отправляем постбэк в Keitaro для subid: {subid}, tid=5")
         keitaro_result = await send_keitaro_postback(subid=subid, status="reg", tid=5, user_id=id)
 
         return {
@@ -382,8 +365,7 @@ async def reg_postback(
                 error_type="POSTBACK_REG_EXCEPTION",
                 error_message=f"Необработанная ошибка в REG постбэке: {str(e)}",
                 user_id=id,
-                additional_info={"action": "reg", "trader_id": trader_id,
-                                 "clickid": clickid, "endpoint": "/postback/reg"},
+                additional_info={"action": "reg", "trader_id": trader_id, "clickid": clickid, "endpoint": "/postback/reg"},
                 full_traceback=True
             )
 
@@ -396,8 +378,7 @@ async def dep_postback(
     sum: str = Query(None, description="Deposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)"),
+    subscriber_id: str = Query(None, description="UUID subscriber ID (for backward compatibility)"),
     trader_id: str = Query(None, description="Trader ID (for search)")
 ):
     """
@@ -407,10 +388,8 @@ async def dep_postback(
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
-    print(
-        f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
-    print(
-        f"[POSTBACK DEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
+    print(f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
+    print(f"[POSTBACK DEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
 
     if not id and not subscriber_id and not clickid and not trader_id:
         return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
@@ -447,8 +426,7 @@ async def dep_postback(
             db.update_user_clickid(actual_user_id, clickid)
 
         if db.check_duplicate_transaction(actual_user_id, "dep", sum_amount=sum_value, time_window_seconds=60):
-            print(
-                f"[POSTBACK DEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
+            print(f"[POSTBACK DEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
             return {
                 "status": "duplicate",
                 "user_id": actual_user_id,
@@ -457,8 +435,7 @@ async def dep_postback(
 
         previous_deposits = db.get_user_deposits_count(actual_user_id)
         tid_value = 6 + previous_deposits
-        print(
-            f"[POSTBACK DEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
+        print(f"[POSTBACK DEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
         result = db.process_postback(
             user_id=actual_user_id,
@@ -487,27 +464,23 @@ async def dep_postback(
                     error_type="POSTBACK_DB_ERROR",
                     error_message=f"Ошибка записи DEP в БД: {error_msg}",
                     user_id=actual_user_id,
-                    additional_info={"action": "dep", "sum": sum_value, "commission": commission_value,
-                                     "tid": tid_value, "clickid": clickid, "endpoint": "/postback/dep"},
+                    additional_info={"action": "dep", "sum": sum_value, "commission": commission_value, "tid": tid_value, "clickid": clickid, "endpoint": "/postback/dep"},
                     full_traceback=True
                 )
 
             return {"status": "error", "error": error_msg}
 
-        print(
-            f"[POSTBACK DEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
+        print(f"[POSTBACK DEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
 
         subid = db.get_user_sub_id(actual_user_id)
         user_clickid = db.get_user_clickid(actual_user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(actual_user_id)
-        print(
-            f"[POSTBACK DEP] Общая сумма депозитов после записи: {total_deposits_sum}")
+        print(f"[POSTBACK DEP] Общая сумма депозитов после записи: {total_deposits_sum}")
 
         # Отправляем постбэк в Chatterfy (если есть clickid)
         chatterfy_result = None
         if user_clickid:
-            print(
-                f"[POSTBACK DEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}")
+            print(f"[POSTBACK DEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}")
             chatterfy_result = await send_chatterfy_postback(
                 clickid=user_clickid,
                 sumdep=total_deposits_sum,
@@ -515,12 +488,10 @@ async def dep_postback(
                 user_id=actual_user_id
             )
         else:
-            print(
-                f"[POSTBACK DEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
+            print(f"[POSTBACK DEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
 
         if not subid:
-            print(
-                f"[POSTBACK DEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
+            print(f"[POSTBACK DEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
             return {
                 "status": "ok",
                 "user_id": actual_user_id,
@@ -541,8 +512,7 @@ async def dep_postback(
                 } if user_clickid else "skipped - no clickid"
             }
 
-        print(
-            f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+        print(f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
             status="sale",
@@ -589,8 +559,7 @@ async def dep_postback(
                 error_type="POSTBACK_DEP_EXCEPTION",
                 error_message=f"Необработанная ошибка в DEP постбэке: {str(e)}",
                 user_id=id,
-                additional_info={"action": "dep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id,
-                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/dep"},
+                additional_info={"action": "dep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id, "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/dep"},
                 full_traceback=True
             )
 
@@ -603,8 +572,7 @@ async def redep_postback(
     sum: str = Query(None, description="Redeposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)"),
+    subscriber_id: str = Query(None, description="UUID subscriber ID (for backward compatibility)"),
     trader_id: str = Query(None, description="Trader ID (for search)")
 ):
     """
@@ -614,10 +582,8 @@ async def redep_postback(
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
-    print(
-        f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
-    print(
-        f"[POSTBACK REDEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
+    print(f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
+    print(f"[POSTBACK REDEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
 
     if not id and not subscriber_id and not clickid and not trader_id:
         return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
@@ -654,8 +620,7 @@ async def redep_postback(
             db.update_user_clickid(actual_user_id, clickid)
 
         if db.check_duplicate_transaction(actual_user_id, "redep", sum_amount=sum_value, time_window_seconds=60):
-            print(
-                f"[POSTBACK REDEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
+            print(f"[POSTBACK REDEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
             return {
                 "status": "duplicate",
                 "user_id": actual_user_id,
@@ -664,8 +629,7 @@ async def redep_postback(
 
         previous_deposits = db.get_user_deposits_count(actual_user_id)
         tid_value = 6 + previous_deposits
-        print(
-            f"[POSTBACK REDEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
+        print(f"[POSTBACK REDEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
         result = db.process_postback(
             user_id=actual_user_id,
@@ -694,27 +658,23 @@ async def redep_postback(
                     error_type="POSTBACK_DB_ERROR",
                     error_message=f"Ошибка записи REDEP в БД: {error_msg}",
                     user_id=actual_user_id,
-                    additional_info={"action": "redep", "sum": sum_value, "commission": commission_value,
-                                     "tid": tid_value, "clickid": clickid, "endpoint": "/postback/redep"},
+                    additional_info={"action": "redep", "sum": sum_value, "commission": commission_value, "tid": tid_value, "clickid": clickid, "endpoint": "/postback/redep"},
                     full_traceback=True
                 )
 
             return {"status": "error", "error": error_msg}
 
-        print(
-            f"[POSTBACK REDEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
+        print(f"[POSTBACK REDEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
 
         subid = db.get_user_sub_id(actual_user_id)
         user_clickid = db.get_user_clickid(actual_user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(actual_user_id)
-        print(
-            f"[POSTBACK REDEP] Общая сумма депозитов после записи: {total_deposits_sum}")
+        print(f"[POSTBACK REDEP] Общая сумма депозитов после записи: {total_deposits_sum}")
 
         # Отправляем постбэк в Chatterfy (если есть clickid)
         chatterfy_result = None
         if user_clickid:
-            print(
-                f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}")
+            print(f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}")
             chatterfy_result = await send_chatterfy_postback(
                 clickid=user_clickid,
                 sumdep=total_deposits_sum,
@@ -722,12 +682,10 @@ async def redep_postback(
                 user_id=actual_user_id
             )
         else:
-            print(
-                f"[POSTBACK REDEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
+            print(f"[POSTBACK REDEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
 
         if not subid:
-            print(
-                f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
+            print(f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
             return {
                 "status": "ok",
                 "user_id": actual_user_id,
@@ -748,8 +706,7 @@ async def redep_postback(
                 } if user_clickid else "skipped - no clickid"
             }
 
-        print(
-            f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+        print(f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
         keitaro_result = await send_keitaro_postback(
             subid=subid,
             status="dep",
@@ -796,8 +753,7 @@ async def redep_postback(
                 error_type="POSTBACK_REDEP_EXCEPTION",
                 error_message=f"Необработанная ошибка в REDEP постбэке: {str(e)}",
                 user_id=id,
-                additional_info={"action": "redep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id,
-                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/redep"},
+                additional_info={"action": "redep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id, "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/redep"},
                 full_traceback=True
             )
 
