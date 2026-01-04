@@ -74,6 +74,101 @@ class DataBase:
             DataBase._pool = None
 
     # ==========================================
+    # МЕТОДЫ ДЛЯ ПОИСКА ПОЛЬЗОВАТЕЛЕЙ
+    # ==========================================
+
+    def find_user_by_any_identifier(
+        self,
+        user_id: int = None,
+        subscriber_id: str = None,
+        clickid_chatterfry: str = None,
+        trader_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ищет пользователя по ЛЮБОМУ из переданных идентификаторов.
+        Приоритет поиска: user_id -> subscriber_id -> clickid_chatterfry -> trader_id
+
+        Args:
+            user_id: Telegram ID (числовой)
+            subscriber_id: UUID идентификатор
+            clickid_chatterfry: Click ID из трекера Chatterfry
+            trader_id: ID трейдера из MVP платформы
+
+        Returns:
+            Dict с user_id и found_by или None
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 1. Поиск по user_id (приоритет)
+                    if user_id:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE id = %s", (user_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            print(f"[DB] Найден пользователь по id={user_id}")
+                            return {"user_id": result[0], "found_by": "user_id"}
+
+                    # 2. Поиск по subscriber_id
+                    if subscriber_id:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE subscriber_id = %s",
+                            (subscriber_id,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            print(
+                                f"[DB] Найден пользователь по subscriber_id={subscriber_id}")
+                            return {"user_id": result[0], "found_by": "subscriber_id"}
+
+                    # 3. Поиск по clickid_chatterfry
+                    if clickid_chatterfry:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE clickid_chatterfry = %s",
+                            (clickid_chatterfry,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            print(
+                                f"[DB] Найден пользователь по clickid_chatterfry={clickid_chatterfry}")
+                            return {"user_id": result[0], "found_by": "clickid_chatterfry"}
+
+                    # 4. Поиск по trader_id
+                    if trader_id:
+                        cursor.execute(
+                            "SELECT id FROM users WHERE trader_id = %s",
+                            (trader_id,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            print(
+                                f"[DB] Найден пользователь по trader_id={trader_id}")
+                            return {"user_id": result[0], "found_by": "trader_id"}
+
+                    print(
+                        f"[DB] Пользователь не найден: id={user_id}, subscriber_id={subscriber_id}, "
+                        f"clickid={clickid_chatterfry}, trader_id={trader_id}")
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка поиска пользователя: {e}")
+            return None
+
+    def find_user_by_any_id(
+        self,
+        user_id: int = None,
+        subscriber_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Обратная совместимость - ищет пользователя по user_id или subscriber_id.
+        Используйте find_user_by_any_identifier для полного поиска.
+        """
+        return self.find_user_by_any_identifier(
+            user_id=user_id,
+            subscriber_id=subscriber_id
+        )
+
+    # ==========================================
     # МЕТОДЫ ДЛЯ СОЗДАНИЯ ПОЛЬЗОВАТЕЛЕЙ
     # ==========================================
 
@@ -159,35 +254,28 @@ class DataBase:
     ) -> Dict[str, Any]:
         """
         Гарантирует что пользователь существует в БД.
-        Ищет по user_id или subscriber_id, создает если не найден.
+        Ищет по всем идентификаторам, создает если не найден.
 
         Returns:
             Dict с user_id и статусом
         """
         try:
-            # Сначала пытаемся найти существующего пользователя
-            found_user_id = None
-
-            if user_id:
-                with self.get_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT id FROM users WHERE id = %s", (user_id,))
-                        result = cursor.fetchone()
-                        if result:
-                            found_user_id = result[0]
-
-            # Если не нашли по user_id, ищем по subscriber_id
-            if not found_user_id and subscriber_id:
-                found_user_id = self.get_user_by_subscriber_id(subscriber_id)
+            # Сначала пытаемся найти существующего пользователя по всем идентификаторам
+            found = self.find_user_by_any_identifier(
+                user_id=user_id,
+                subscriber_id=subscriber_id,
+                clickid_chatterfry=clickid_chatterfry,
+                trader_id=trader_id
+            )
 
             # Если пользователь найден - возвращаем его
-            if found_user_id:
+            if found:
                 return {
                     "success": True,
-                    "user_id": found_user_id,
+                    "user_id": found["user_id"],
                     "created": False,
-                    "existed": True
+                    "existed": True,
+                    "found_by": found["found_by"]
                 }
 
             # Если user_id не передан и пользователь не найден - ошибка
@@ -294,22 +382,31 @@ class DataBase:
         user_id: int,
         action: str,
         sum_amount: float = None,
+        commission: float = None,
         raw_data: dict = None
     ) -> Dict[str, Any]:
         """
         Создает запись о транзакции в таблице transactions
+
+        Args:
+            user_id: ID пользователя
+            action: Тип действия (ftm, reg, dep, redep)
+            sum_amount: Сумма депозита (опционально)
+            commission: Комиссия (опционально, для dep/redep)
+            raw_data: Сырые данные запроса
         """
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        INSERT INTO transactions (user_id, action, sum, raw_data)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO transactions (user_id, action, sum, commission, raw_data)
+                        VALUES (%s, %s, %s, %s, %s)
                         RETURNING id, created_at
                     """, (
                         user_id,
                         action,
                         sum_amount,
+                        commission,
                         json.dumps(raw_data) if raw_data else None
                     ))
 
@@ -318,7 +415,7 @@ class DataBase:
                     created_at = result[1]
 
                     print(
-                        f"[DB] ✓ Создана транзакция #{transaction_id}: user={user_id}, action={action}, sum={sum_amount}")
+                        f"[DB] ✓ Создана транзакция #{transaction_id}: user={user_id}, action={action}, sum={sum_amount}, commission={commission}")
 
                     return {
                         "success": True,
@@ -388,10 +485,18 @@ class DataBase:
         user_id: int,
         action: str,
         sum_amount: float = None,
+        commission: float = None,
         raw_data: dict = None
     ) -> Dict[str, Any]:
         """
         Полная обработка постбэка: создает транзакцию + обновляет users
+
+        Args:
+            user_id: ID пользователя
+            action: Тип действия
+            sum_amount: Сумма (опционально)
+            commission: Комиссия (опционально)
+            raw_data: Сырые данные
         """
         try:
             # 1. Создаем запись в транзакциях
@@ -399,6 +504,7 @@ class DataBase:
                 user_id=user_id,
                 action=action,
                 sum_amount=sum_amount,
+                commission=commission,
                 raw_data=raw_data
             )
 
@@ -453,7 +559,7 @@ class DataBase:
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                     cursor.execute("""
-                        SELECT id, action, sum, created_at, raw_data
+                        SELECT id, action, sum, commission, created_at, raw_data
                         FROM transactions
                         WHERE user_id = %s
                         ORDER BY created_at DESC
@@ -480,7 +586,7 @@ class DataBase:
                     stats['total_transactions'] = cursor.fetchone()[0]
 
                     cursor.execute("""
-                        SELECT action, COUNT(*) as count, SUM(sum) as total_sum
+                        SELECT action, COUNT(*) as count, SUM(sum) as total_sum, SUM(commission) as total_commission
                         FROM transactions
                         GROUP BY action
                         ORDER BY count DESC
@@ -491,7 +597,8 @@ class DataBase:
                         {
                             "action": row[0],
                             "count": row[1],
-                            "total_sum": float(row[2]) if row[2] else 0
+                            "total_sum": float(row[2]) if row[2] else 0,
+                            "total_commission": float(row[3]) if row[3] else 0
                         }
                         for row in action_stats
                     ]
@@ -501,7 +608,7 @@ class DataBase:
                     stats['unique_users'] = cursor.fetchone()[0]
 
                     cursor.execute("""
-                        SELECT user_id, action, sum, created_at
+                        SELECT user_id, action, sum, commission, created_at
                         FROM transactions
                         ORDER BY created_at DESC
                         LIMIT 10
@@ -513,7 +620,8 @@ class DataBase:
                             "user_id": row[0],
                             "action": row[1],
                             "sum": float(row[2]) if row[2] else None,
-                            "created_at": row[3].isoformat() if row[3] else None
+                            "commission": float(row[3]) if row[3] else None,
+                            "created_at": row[4].isoformat() if row[4] else None
                         }
                         for row in recent
                     ]
@@ -590,54 +698,6 @@ class DataBase:
 
         except Exception as e:
             print(f"[DB] Ошибка поиска пользователя по subscriber_id: {e}")
-            return None
-
-    def find_user_by_any_id(
-        self,
-        user_id: int = None,
-        subscriber_id: str = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Ищет пользователя по любому из идентификаторов.
-        Возвращает user_id и способ нахождения.
-
-        Args:
-            user_id: Telegram ID (числовой)
-            subscriber_id: UUID идентификатор
-
-        Returns:
-            Dict с user_id и found_by или None
-        """
-        try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Сначала ищем по user_id (приоритет)
-                    if user_id:
-                        cursor.execute(
-                            "SELECT id FROM users WHERE id = %s", (user_id,))
-                        result = cursor.fetchone()
-                        if result:
-                            print(f"[DB] Найден пользователь по id={user_id}")
-                            return {"user_id": result[0], "found_by": "user_id"}
-
-                    # Затем ищем по subscriber_id
-                    if subscriber_id:
-                        cursor.execute(
-                            "SELECT id FROM users WHERE subscriber_id = %s",
-                            (subscriber_id,)
-                        )
-                        result = cursor.fetchone()
-                        if result:
-                            print(
-                                f"[DB] Найден пользователь по subscriber_id={subscriber_id}")
-                            return {"user_id": result[0], "found_by": "subscriber_id"}
-
-                    print(
-                        f"[DB] Пользователь не найден: id={user_id}, subscriber_id={subscriber_id}")
-                    return None
-
-        except Exception as e:
-            print(f"[DB] Ошибка поиска пользователя: {e}")
             return None
 
     # ==========================================
