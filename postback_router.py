@@ -11,8 +11,15 @@ Postback Router - обработка постбэков от внешних си
 - id: Telegram User ID (обязательный)
 - subscriber_id: UUID идентификатор (опциональный, для обратной совместимости)
 - trader_id: ID трейдера из платформы (для reg)
-- sum: Сумма депозита (для dep/redep)
 - clickid: Click ID из трекера Chatterfry (опциональный)
+- sum: Сумма депозита (для dep/redep)
+- commission: Комиссия (для dep/redep)
+
+Поиск пользователя происходит по всем доступным идентификаторам:
+1. id (Telegram User ID) - приоритет
+2. subscriber_id (UUID)
+3. clickid (clickid_chatterfry)
+4. trader_id
 """
 
 from fastapi import APIRouter, Query
@@ -59,6 +66,31 @@ def parse_sum_parameter(sum_value) -> float:
         return DEFAULT_SUM
 
 
+def parse_commission_parameter(commission_value) -> Optional[float]:
+    """
+    Безопасно парсит параметр commission.
+    Возвращает None если значение невалидно.
+
+    Обрабатывает:
+    - None -> None
+    - Пустая строка -> None
+    - "{commission}" или любую непарсящуюся строку -> None
+    - Число < 0 -> None
+    - Валидное число >= 0 -> это число
+    """
+    if commission_value is None or commission_value == "":
+        return None
+
+    if isinstance(commission_value, (int, float)):
+        return float(commission_value) if commission_value >= 0 else None
+
+    try:
+        parsed = float(commission_value)
+        return parsed if parsed >= 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
 def is_valid_uuid(value: str) -> bool:
     """Проверяет, является ли строка валидным UUID"""
     if not value:
@@ -78,7 +110,7 @@ async def ensure_user_and_update_clickid(
     Returns:
         Dict с user_id и статусом создания
     """
-    # Убеждаемся что пользователь существует
+    # Убеждаемся что пользователь существует (ищем по всем идентификаторам)
     result = db.ensure_user_exists(
         user_id=user_id,
         subscriber_id=subscriber_id,
@@ -100,18 +132,24 @@ async def ensure_user_and_update_clickid(
 
 async def find_user_for_deposit(
     user_id: int = None,
-    subscriber_id: str = None
+    subscriber_id: str = None,
+    clickid: str = None,
+    trader_id: str = None
 ) -> Optional[int]:
     """
     Ищет пользователя для операций deposit/redeposit.
-    Поддерживает поиск по user_id и subscriber_id для обратной совместимости.
+    Поддерживает поиск по всем идентификаторам.
 
     Returns:
         user_id если найден, None если не найден
     """
-    # Сначала ищем существующего пользователя
-    found = db.find_user_by_any_id(
-        user_id=user_id, subscriber_id=subscriber_id)
+    # Ищем существующего пользователя по всем идентификаторам
+    found = db.find_user_by_any_identifier(
+        user_id=user_id,
+        subscriber_id=subscriber_id,
+        clickid_chatterfry=clickid,
+        trader_id=trader_id
+    )
 
     if found:
         return found.get("user_id")
@@ -124,7 +162,8 @@ async def ftm_postback(
     id: int = Query(..., description="Telegram User ID"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
-        None, description="UUID subscriber ID (optional)")
+        None, description="UUID subscriber ID (optional)"),
+    trader_id: str = Query(None, description="Trader ID (optional)")
 ):
     """
     FTM (First Time Message) постбэк
@@ -133,18 +172,20 @@ async def ftm_postback(
     - id: Telegram ID пользователя (обязательный)
     - clickid: Click ID из трекера (опциональный)
     - subscriber_id: UUID идентификатор (опциональный)
+    - trader_id: ID трейдера (опциональный)
     - tid: автоматически 4
 
     Пример: /postback/ftm?id=123456&clickid=abc123
     """
     print(
-        f"[POSTBACK FTM] id: {id}, clickid: {clickid}, subscriber_id: {subscriber_id}")
+        f"[POSTBACK FTM] id: {id}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
 
     try:
         # 1. Убеждаемся что пользователь существует (создаем если нет)
         user_result = await ensure_user_and_update_clickid(
             user_id=id,
             subscriber_id=subscriber_id,
+            trader_id=trader_id,
             clickid=clickid
         )
 
@@ -178,6 +219,7 @@ async def ftm_postback(
                 "action": "ftm",
                 "clickid": clickid,
                 "subscriber_id": subscriber_id,
+                "trader_id": trader_id,
                 "user_created": user_created
             }
         )
@@ -435,41 +477,57 @@ async def reg_postback(
 async def dep_postback(
     id: int = Query(None, description="Telegram User ID"),
     sum: str = Query(None, description="Deposit amount (default: 59)"),
+    commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)")
+        None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(None, description="Trader ID (for search)")
 ):
     """
     Депозит пользователя (первый депозит)
     Отправляет событие SALE в Keitaro
 
     Параметры:
-    - id: Telegram ID пользователя (обязательный, если нет subscriber_id)
+    - id: Telegram ID пользователя (если нет - поиск по другим идентификаторам)
     - subscriber_id: UUID для поиска пользователя (обратная совместимость)
+    - clickid: Click ID для поиска пользователя
+    - trader_id: Trader ID для поиска пользователя
     - sum: Сумма депозита (если не указана или невалидна, используется 59)
-    - clickid: Click ID из трекера (опционально)
+    - commission: Комиссия (сохраняется в транзакции)
     - tid: автоматически 6 + количество предыдущих депозитов
 
+    Поиск пользователя: id -> subscriber_id -> clickid -> trader_id
+
     Примеры: 
-    - /postback/dep?id=123456&sum=100.50
+    - /postback/dep?id=123456&sum=100.50&commission=10.5
     - /postback/dep?subscriber_id=1cd38701-7e6e-4ce7-8161-9ce3011a0cfb&sum=100
-    - /postback/dep?id=123456&sum={sumdep} (будет 59)
+    - /postback/dep?clickid=abc123&sum=100&commission=5
+    - /postback/dep?trader_id=TRD_123&sum=100
     """
-    # Парсим и валидируем сумму
+    # Парсим и валидируем сумму и комиссию
     sum_value = parse_sum_parameter(sum)
+    commission_value = parse_commission_parameter(commission)
+
     print(
-        f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, sum_raw: {sum!r}, sum_parsed: {sum_value}, clickid: {clickid}")
+        f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
+    print(
+        f"[POSTBACK DEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
 
     # Проверяем что хотя бы один идентификатор передан
-    if not id and not subscriber_id:
+    if not id and not subscriber_id and not clickid and not trader_id:
         return {
             "status": "error",
-            "error": "Either 'id' or 'subscriber_id' parameter is required"
+            "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"
         }
 
     try:
-        # 1. Ищем пользователя по любому из идентификаторов
-        actual_user_id = await find_user_for_deposit(user_id=id, subscriber_id=subscriber_id)
+        # 1. Ищем пользователя по всем идентификаторам
+        actual_user_id = await find_user_for_deposit(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            clickid=clickid,
+            trader_id=trader_id
+        )
 
         # Если не нашли и есть id - создаем нового пользователя
         user_created = False
@@ -477,6 +535,7 @@ async def dep_postback(
             user_result = await ensure_user_and_update_clickid(
                 user_id=id,
                 subscriber_id=subscriber_id,
+                trader_id=trader_id,
                 clickid=clickid
             )
             if user_result.get("success"):
@@ -485,7 +544,7 @@ async def dep_postback(
                 print(f"[POSTBACK DEP] ✓ Создан новый пользователь {id}")
 
         if not actual_user_id:
-            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}"
+            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
             print(f"[POSTBACK DEP] ✗ {error_msg}")
             return {"status": "error", "error": error_msg}
 
@@ -511,20 +570,22 @@ async def dep_postback(
         print(
             f"[POSTBACK DEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
-        # 5. Записываем в БД
+        # 5. Записываем в БД (включая commission)
         result = db.process_postback(
             user_id=actual_user_id,
             action="dep",
             sum_amount=sum_value,
+            commission=commission_value,
             raw_data={
                 "id": id,
                 "subscriber_id": subscriber_id,
+                "clickid": clickid,
+                "trader_id": trader_id,
                 "action": "dep",
                 "sum": sum_value,
+                "commission": commission_value,
                 "tid": tid_value,
-                "clickid": clickid,
-                "user_created": user_created,
-                "found_by": "subscriber_id" if subscriber_id and not id else "user_id"
+                "user_created": user_created
             }
         )
 
@@ -540,6 +601,7 @@ async def dep_postback(
                     additional_info={
                         "action": "dep",
                         "sum": sum_value,
+                        "commission": commission_value,
                         "tid": tid_value,
                         "clickid": clickid,
                         "endpoint": "/postback/dep"
@@ -550,7 +612,7 @@ async def dep_postback(
             return {"status": "error", "error": error_msg}
 
         print(
-            f"[POSTBACK DEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}")
+            f"[POSTBACK DEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
 
         # 6. Получаем sub_3 (subid) из БД
         subid = db.get_user_sub_id(actual_user_id)
@@ -563,6 +625,7 @@ async def dep_postback(
                 "user_id": actual_user_id,
                 "action": "dep",
                 "sum": sum_value,
+                "commission": commission_value,
                 "tid": tid_value,
                 "user_created": user_created,
                 "transaction_id": result.get("transaction_id"),
@@ -585,6 +648,7 @@ async def dep_postback(
             "user_id": actual_user_id,
             "action": "dep",
             "sum": sum_value,
+            "commission": commission_value,
             "tid": tid_value,
             "user_created": user_created,
             "transaction_id": result.get("transaction_id"),
@@ -612,8 +676,10 @@ async def dep_postback(
                 additional_info={
                     "action": "dep",
                     "sum": sum,
+                    "commission": commission,
                     "subscriber_id": subscriber_id,
                     "clickid": clickid,
+                    "trader_id": trader_id,
                     "endpoint": "/postback/dep"
                 },
                 full_traceback=True
@@ -626,41 +692,57 @@ async def dep_postback(
 async def redep_postback(
     id: int = Query(None, description="Telegram User ID"),
     sum: str = Query(None, description="Redeposit amount (default: 59)"),
+    commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)")
+        None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(None, description="Trader ID (for search)")
 ):
     """
     Редепозит пользователя (повторный депозит)
     Отправляет событие DEP в Keitaro
 
     Параметры:
-    - id: Telegram ID пользователя (обязательный, если нет subscriber_id)
+    - id: Telegram ID пользователя (если нет - поиск по другим идентификаторам)
     - subscriber_id: UUID для поиска пользователя (обратная совместимость)
+    - clickid: Click ID для поиска пользователя
+    - trader_id: Trader ID для поиска пользователя
     - sum: Сумма редепозита (если не указана или невалидна, используется 59)
-    - clickid: Click ID из трекера (опционально)
+    - commission: Комиссия (сохраняется в транзакции)
     - tid: автоматически 6 + количество предыдущих депозитов (включая dep и redep)
 
+    Поиск пользователя: id -> subscriber_id -> clickid -> trader_id
+
     Примеры:
-    - /postback/redep?id=123456&sum=250.00
+    - /postback/redep?id=123456&sum=250.00&commission=25
     - /postback/redep?subscriber_id=1cd38701-7e6e-4ce7-8161-9ce3011a0cfb&sum=250
-    - /postback/redep?id=123456&sum={sumdep} (будет 59)
+    - /postback/redep?clickid=abc123&sum=250&commission=12.5
+    - /postback/redep?trader_id=TRD_123&sum=250
     """
-    # Парсим и валидируем сумму
+    # Парсим и валидируем сумму и комиссию
     sum_value = parse_sum_parameter(sum)
+    commission_value = parse_commission_parameter(commission)
+
     print(
-        f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, sum_raw: {sum!r}, sum_parsed: {sum_value}, clickid: {clickid}")
+        f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
+    print(
+        f"[POSTBACK REDEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
 
     # Проверяем что хотя бы один идентификатор передан
-    if not id and not subscriber_id:
+    if not id and not subscriber_id and not clickid and not trader_id:
         return {
             "status": "error",
-            "error": "Either 'id' or 'subscriber_id' parameter is required"
+            "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"
         }
 
     try:
-        # 1. Ищем пользователя по любому из идентификаторов
-        actual_user_id = await find_user_for_deposit(user_id=id, subscriber_id=subscriber_id)
+        # 1. Ищем пользователя по всем идентификаторам
+        actual_user_id = await find_user_for_deposit(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            clickid=clickid,
+            trader_id=trader_id
+        )
 
         # Если не нашли и есть id - создаем нового пользователя
         user_created = False
@@ -668,6 +750,7 @@ async def redep_postback(
             user_result = await ensure_user_and_update_clickid(
                 user_id=id,
                 subscriber_id=subscriber_id,
+                trader_id=trader_id,
                 clickid=clickid
             )
             if user_result.get("success"):
@@ -676,7 +759,7 @@ async def redep_postback(
                 print(f"[POSTBACK REDEP] ✓ Создан новый пользователь {id}")
 
         if not actual_user_id:
-            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}"
+            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
             print(f"[POSTBACK REDEP] ✗ {error_msg}")
             return {"status": "error", "error": error_msg}
 
@@ -702,20 +785,22 @@ async def redep_postback(
         print(
             f"[POSTBACK REDEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
-        # 5. Записываем в БД как redep
+        # 5. Записываем в БД как redep (включая commission)
         result = db.process_postback(
             user_id=actual_user_id,
             action="redep",
             sum_amount=sum_value,
+            commission=commission_value,
             raw_data={
                 "id": id,
                 "subscriber_id": subscriber_id,
+                "clickid": clickid,
+                "trader_id": trader_id,
                 "action": "redep",
                 "sum": sum_value,
+                "commission": commission_value,
                 "tid": tid_value,
-                "clickid": clickid,
-                "user_created": user_created,
-                "found_by": "subscriber_id" if subscriber_id and not id else "user_id"
+                "user_created": user_created
             }
         )
 
@@ -731,6 +816,7 @@ async def redep_postback(
                     additional_info={
                         "action": "redep",
                         "sum": sum_value,
+                        "commission": commission_value,
                         "tid": tid_value,
                         "clickid": clickid,
                         "endpoint": "/postback/redep"
@@ -741,7 +827,7 @@ async def redep_postback(
             return {"status": "error", "error": error_msg}
 
         print(
-            f"[POSTBACK REDEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}")
+            f"[POSTBACK REDEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
 
         # 6. Получаем sub_3 (subid) из БД
         subid = db.get_user_sub_id(actual_user_id)
@@ -754,6 +840,7 @@ async def redep_postback(
                 "user_id": actual_user_id,
                 "action": "redep",
                 "sum": sum_value,
+                "commission": commission_value,
                 "tid": tid_value,
                 "user_created": user_created,
                 "transaction_id": result.get("transaction_id"),
@@ -776,6 +863,7 @@ async def redep_postback(
             "user_id": actual_user_id,
             "action": "redep",
             "sum": sum_value,
+            "commission": commission_value,
             "tid": tid_value,
             "user_created": user_created,
             "transaction_id": result.get("transaction_id"),
@@ -803,8 +891,10 @@ async def redep_postback(
                 additional_info={
                     "action": "redep",
                     "sum": sum,
+                    "commission": commission,
                     "subscriber_id": subscriber_id,
                     "clickid": clickid,
+                    "trader_id": trader_id,
                     "endpoint": "/postback/redep"
                 },
                 full_traceback=True
@@ -877,16 +967,24 @@ async def get_user_history(user_id: int, limit: int = 50):
 @router.get("/lookup")
 async def lookup_user(
     id: int = Query(None, description="Telegram User ID"),
-    subscriber_id: str = Query(None, description="UUID subscriber ID")
+    subscriber_id: str = Query(None, description="UUID subscriber ID"),
+    clickid: str = Query(None, description="Click ID from Chatterfry"),
+    trader_id: str = Query(None, description="Trader ID")
 ):
     """
-    Поиск пользователя по любому идентификатору
+    Поиск пользователя по любому идентификатору.
+    Поддерживает: id, subscriber_id, clickid, trader_id
     """
-    if not id and not subscriber_id:
-        return {"status": "error", "error": "Either 'id' or 'subscriber_id' required"}
+    if not id and not subscriber_id and not clickid and not trader_id:
+        return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
 
     try:
-        found = db.find_user_by_any_id(user_id=id, subscriber_id=subscriber_id)
+        found = db.find_user_by_any_identifier(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            clickid_chatterfry=clickid,
+            trader_id=trader_id
+        )
 
         if found:
             user_id = found.get("user_id")
@@ -903,7 +1001,9 @@ async def lookup_user(
                 "status": "ok",
                 "found": False,
                 "searched_id": id,
-                "searched_subscriber_id": subscriber_id
+                "searched_subscriber_id": subscriber_id,
+                "searched_clickid": clickid,
+                "searched_trader_id": trader_id
             }
     except Exception as e:
         return {"status": "error", "error": str(e)}
