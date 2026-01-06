@@ -184,6 +184,7 @@ async def send_chatterfy_postback(
     clickid: str,
     sumdep: float,
     previous_dep: float,
+    is_redep: bool = False,
     retries: int = 3,
     delay: int = 60,
     user_id: int = None
@@ -196,11 +197,15 @@ async def send_chatterfy_postback(
     - clickid: clickid_chatterfry из БД
     - sumdep: общая сумма всех депозитов пользователя
     - previous_dep: сумма текущей транзакции
+    - is_redep: True для редепозита (использует event sumdep_postback_rd), False для депозита (sumdep)
     """
     from config import CHATTERFY_POSTBACK_URL
 
+    # Разные события для dep и redep
+    event_type = "sumdep_postback_rd" if is_redep else "sumdep"
+
     params = {
-        "tracker.event": "sumdep",
+        "tracker.event": event_type,
         "clickid": clickid,
         "fields.sumdep": sumdep,
         "fields.previous_dep": previous_dep
@@ -212,12 +217,12 @@ async def send_chatterfy_postback(
         retries=retries,
         delay=delay,
         bot=None,
-        postback_type="Chatterfy_SUMDEP",
+        postback_type=f"Chatterfy_{event_type.upper()}",
         user_id=user_id
     )
-    result["postback_type"] = "Chatterfy SUMDEP"
+    result["postback_type"] = f"Chatterfy {event_type.upper()}"
 
-    print(f"📤 Постбэк Chatterfy (sumdep): {result['full_url']}")
+    print(f"📤 Постбэк Chatterfy ({event_type}): {result['full_url']}")
     if result['ok']:
         print(f"Результат: ✓ OK")
     else:
