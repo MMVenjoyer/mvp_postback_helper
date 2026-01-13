@@ -20,6 +20,9 @@ Postback Router - обработка постбэков от внешних си
 2. subscriber_id (UUID)
 3. clickid (clickid_chatterfry)
 4. trader_id
+
+ВАЖНО: trader_id обновляется при КАЖДОМ постбэке, если передан.
+Это нужно потому что юзеры могут регистрировать новые аккаунты на платформе.
 """
 
 from fastapi import APIRouter, Query
@@ -91,7 +94,10 @@ async def ensure_user_and_update_clickid(
     clickid: str = None
 ) -> dict:
     """
-    Гарантирует существование пользователя и обновляет clickid если нужно.
+    Гарантирует существование пользователя и обновляет clickid/trader_id если нужно.
+
+    ВАЖНО: trader_id обновляется ВСЕГДА когда передан, даже для существующих юзеров.
+    Это нужно т.к. юзеры могут регать новые аккаунты на платформе.
     """
     result = db.ensure_user_exists(
         user_id=user_id,
@@ -105,8 +111,25 @@ async def ensure_user_and_update_clickid(
 
     actual_user_id = result.get("user_id", user_id)
 
-    if result.get("existed") and clickid:
-        db.update_user_clickid(actual_user_id, clickid)
+    # Если юзер уже существовал - обновляем clickid и trader_id
+    if result.get("existed"):
+        # Обновляем clickid (только если пустой)
+        if clickid:
+            db.update_user_clickid(actual_user_id, clickid)
+
+        # ВАЖНО: Обновляем trader_id ВСЕГДА когда передан
+        # Юзер мог зарегать новый аккаунт на платформе
+        if trader_id:
+            old_trader_id = db.get_user_trader_id(actual_user_id)
+            if old_trader_id != trader_id:
+                update_result = db.update_user_trader_id(
+                    actual_user_id, trader_id)
+                if update_result.get("success"):
+                    print(
+                        f"[POSTBACK] ✓ trader_id обновлен для user {actual_user_id}: {old_trader_id} -> {trader_id}")
+                    result["trader_id_updated"] = True
+                    result["old_trader_id"] = old_trader_id
+                    result["new_trader_id"] = trader_id
 
     return result
 
@@ -131,6 +154,33 @@ async def find_user_for_deposit(
         return found.get("user_id")
 
     return None
+
+
+async def update_trader_id_if_needed(user_id: int, trader_id: str) -> dict:
+    """
+    Обновляет trader_id если он передан и отличается от текущего.
+    Возвращает информацию об обновлении.
+    """
+    if not trader_id:
+        return {"updated": False, "reason": "no_trader_id_provided"}
+
+    old_trader_id = db.get_user_trader_id(user_id)
+
+    if old_trader_id == trader_id:
+        return {"updated": False, "reason": "same_trader_id"}
+
+    update_result = db.update_user_trader_id(user_id, trader_id)
+
+    if update_result.get("success"):
+        print(
+            f"[POSTBACK] ✓ trader_id обновлен для user {user_id}: {old_trader_id} -> {trader_id}")
+        return {
+            "updated": True,
+            "old_trader_id": old_trader_id,
+            "new_trader_id": trader_id
+        }
+    else:
+        return {"updated": False, "reason": "db_error", "error": update_result.get("error")}
 
 
 @router.get("/ftm")
@@ -162,6 +212,8 @@ async def ftm_postback(
             return {"status": "error", "error": error_msg}
 
         user_created = user_result.get("created", False)
+        trader_id_updated = user_result.get("trader_id_updated", False)
+
         if user_created:
             print(f"[POSTBACK FTM] ✓ Создан новый пользователь {id}")
 
@@ -184,7 +236,8 @@ async def ftm_postback(
                 "clickid": clickid,
                 "subscriber_id": subscriber_id,
                 "trader_id": trader_id,
-                "user_created": user_created
+                "user_created": user_created,
+                "trader_id_updated": trader_id_updated
             }
         )
 
@@ -216,6 +269,7 @@ async def ftm_postback(
                 "user_id": id,
                 "action": "ftm",
                 "user_created": user_created,
+                "trader_id_updated": trader_id_updated,
                 "transaction_id": result.get("transaction_id"),
                 "keitaro_postback": "skipped - no subid"
             }
@@ -229,6 +283,7 @@ async def ftm_postback(
             "user_id": id,
             "action": "ftm",
             "user_created": user_created,
+            "trader_id_updated": trader_id_updated,
             "transaction_id": result.get("transaction_id"),
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
@@ -266,7 +321,8 @@ async def reg_postback(
         None, description="UUID subscriber ID (optional)")
 ):
     """
-    Регистрация пользователя
+    Регистрация пользователя.
+    trader_id обновляется ВСЕГДА когда передан (юзер мог зарегать новый аккаунт).
     """
     print(
         f"[POSTBACK REG] id: {id}, trader_id: {trader_id}, clickid: {clickid}, subscriber_id: {subscriber_id}")
@@ -286,16 +342,15 @@ async def reg_postback(
             return {"status": "error", "error": error_msg}
 
         user_created = user_result.get("created", False)
+        trader_id_updated = user_result.get("trader_id_updated", False)
+        old_trader_id = user_result.get("old_trader_id")
+
         if user_created:
             print(f"[POSTBACK REG] ✓ Создан новый пользователь {id}")
 
-        trader_saved = False
-        if trader_id and not user_created:
-            trader_result = db.update_user_trader_id(id, trader_id)
-            trader_saved = trader_result.get("success", False)
-            if trader_saved:
-                print(
-                    f"[POSTBACK REG] ✓ trader_id обновлен для user {id}: {trader_id}")
+        if trader_id_updated:
+            print(
+                f"[POSTBACK REG] ✓ trader_id обновлен: {old_trader_id} -> {trader_id}")
 
         if db.check_duplicate_transaction(id, "reg", time_window_seconds=30):
             print(
@@ -311,10 +366,13 @@ async def reg_postback(
             "action": "reg",
             "clickid": clickid,
             "subscriber_id": subscriber_id,
-            "user_created": user_created
+            "user_created": user_created,
+            "trader_id_updated": trader_id_updated
         }
         if trader_id:
             raw_data["trader_id"] = trader_id
+        if old_trader_id:
+            raw_data["old_trader_id"] = old_trader_id
 
         result = db.process_postback(
             user_id=id, action="reg", sum_amount=None, raw_data=raw_data)
@@ -347,7 +405,9 @@ async def reg_postback(
                 "user_id": id,
                 "action": "reg",
                 "user_created": user_created,
-                "trader_id": trader_id if (trader_saved or user_created) else None,
+                "trader_id": trader_id,
+                "trader_id_updated": trader_id_updated,
+                "old_trader_id": old_trader_id,
                 "transaction_id": result.get("transaction_id"),
                 "keitaro_postback": "skipped - no subid"
             }
@@ -361,7 +421,9 @@ async def reg_postback(
             "user_id": id,
             "action": "reg",
             "user_created": user_created,
-            "trader_id": trader_id if (trader_saved or user_created) else None,
+            "trader_id": trader_id,
+            "trader_id_updated": trader_id_updated,
+            "old_trader_id": old_trader_id,
             "transaction_id": result.get("transaction_id"),
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
@@ -398,11 +460,14 @@ async def dep_postback(
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
         None, description="UUID subscriber ID (for backward compatibility)"),
-    trader_id: str = Query(None, description="Trader ID (for search)")
+    trader_id: str = Query(
+        None, description="Trader ID (for search and update)")
 ):
     """
     Депозит пользователя (первый депозит)
     Отправляет событие SALE в Keitaro и постбэк в Chatterfy с суммой депозитов (event: sumdep)
+
+    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     """
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
@@ -424,6 +489,8 @@ async def dep_postback(
         )
 
         user_created = False
+        trader_id_update_info = {"updated": False}
+
         if not actual_user_id and id:
             user_result = await ensure_user_and_update_clickid(
                 user_id=id,
@@ -443,8 +510,13 @@ async def dep_postback(
 
         print(f"[POSTBACK DEP] Найден пользователь: {actual_user_id}")
 
+        # Обновляем clickid если передан
         if clickid:
             db.update_user_clickid(actual_user_id, clickid)
+
+        # ВАЖНО: Обновляем trader_id если передан (юзер мог зарегать новый аккаунт)
+        if trader_id and not user_created:
+            trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
 
         if db.check_duplicate_transaction(actual_user_id, "dep", sum_amount=sum_value, time_window_seconds=60):
             print(
@@ -474,7 +546,9 @@ async def dep_postback(
                 "sum": sum_value,
                 "commission": commission_value,
                 "tid": tid_value,
-                "user_created": user_created
+                "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id")
             }
         )
 
@@ -530,6 +604,9 @@ async def dep_postback(
                 "commission": commission_value,
                 "tid": tid_value,
                 "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id"),
+                "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
                 "transaction_id": result.get("transaction_id"),
                 "total_deposits_sum": total_deposits_sum,
                 "keitaro_postback": "skipped - no subid",
@@ -561,6 +638,9 @@ async def dep_postback(
             "commission": commission_value,
             "tid": tid_value,
             "user_created": user_created,
+            "trader_id_updated": trader_id_update_info.get("updated", False),
+            "old_trader_id": trader_id_update_info.get("old_trader_id"),
+            "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
             "transaction_id": result.get("transaction_id"),
             "total_deposits_sum": total_deposits_sum,
             "keitaro_postback": {
@@ -608,11 +688,14 @@ async def redep_postback(
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
         None, description="UUID subscriber ID (for backward compatibility)"),
-    trader_id: str = Query(None, description="Trader ID (for search)")
+    trader_id: str = Query(
+        None, description="Trader ID (for search and update)")
 ):
     """
     Редепозит пользователя (повторный депозит)
     Отправляет событие DEP в Keitaro и постбэк в Chatterfy с суммой депозитов (event: sumdep_postback_rd)
+
+    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     """
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
@@ -634,6 +717,8 @@ async def redep_postback(
         )
 
         user_created = False
+        trader_id_update_info = {"updated": False}
+
         if not actual_user_id and id:
             user_result = await ensure_user_and_update_clickid(
                 user_id=id,
@@ -653,8 +738,13 @@ async def redep_postback(
 
         print(f"[POSTBACK REDEP] Найден пользователь: {actual_user_id}")
 
+        # Обновляем clickid если передан
         if clickid:
             db.update_user_clickid(actual_user_id, clickid)
+
+        # ВАЖНО: Обновляем trader_id если передан (юзер мог зарегать новый аккаунт)
+        if trader_id and not user_created:
+            trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
 
         if db.check_duplicate_transaction(actual_user_id, "redep", sum_amount=sum_value, time_window_seconds=60):
             print(
@@ -684,7 +774,9 @@ async def redep_postback(
                 "sum": sum_value,
                 "commission": commission_value,
                 "tid": tid_value,
-                "user_created": user_created
+                "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id")
             }
         )
 
@@ -740,6 +832,9 @@ async def redep_postback(
                 "commission": commission_value,
                 "tid": tid_value,
                 "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id"),
+                "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
                 "transaction_id": result.get("transaction_id"),
                 "total_deposits_sum": total_deposits_sum,
                 "keitaro_postback": "skipped - no subid",
@@ -771,6 +866,9 @@ async def redep_postback(
             "commission": commission_value,
             "tid": tid_value,
             "user_created": user_created,
+            "trader_id_updated": trader_id_update_info.get("updated", False),
+            "old_trader_id": trader_id_update_info.get("old_trader_id"),
+            "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
             "transaction_id": result.get("transaction_id"),
             "total_deposits_sum": total_deposits_sum,
             "keitaro_postback": {
