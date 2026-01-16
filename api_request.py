@@ -209,7 +209,7 @@ async def send_chatterfy_postback(
         "clickid": clickid,
         "fields.sumdep": sumdep,
         "fields.previous_dep": previous_dep,
-        "tracker.cost": sumdep
+        "tracker.cost": previous_dep
     }
 
     result = await fetch_with_retry(
