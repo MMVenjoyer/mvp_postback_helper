@@ -197,12 +197,12 @@ async def send_chatterfy_postback(
     - clickid: clickid_chatterfry из БД
     - sumdep: общая сумма всех депозитов пользователя
     - previous_dep: сумма текущей транзакции
-    - is_redep: True для редепозита (использует event sumdep_postback_rd), False для депозита (sumdep)
+    - is_redep: True для редепозита (использует event pb_redep), False для депозита (sumdep)
     """
     from config import CHATTERFY_POSTBACK_URL
 
     # Разные события для dep и redep
-    event_type = "sumdep_postback_rd" if is_redep else "sumdep"
+    event_type = "pb_redep" if is_redep else "sumdep"
 
     params = {
         "tracker.event": event_type,
