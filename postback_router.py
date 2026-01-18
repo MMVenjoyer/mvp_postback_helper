@@ -6,13 +6,14 @@ Postback Router - обработка постбэков от внешних си
 - /postback/reg - Registration (регистрация)
 - /postback/dep - Deposit (первый депозит)
 - /postback/redep - Redeposit (повторный депозит)
+- /postback/withdraw - Withdraw (вывод средств)
 
 Параметры запросов:
 - id: Telegram User ID (обязательный)
 - subscriber_id: UUID идентификатор (опциональный, для обратной совместимости)
 - trader_id: ID трейдера из платформы (для reg)
 - clickid: Click ID из трекера Chatterfry (опциональный)
-- sum: Сумма депозита (для dep/redep)
+- sum: Сумма депозита/вывода (для dep/redep/withdraw)
 - commission: Комиссия (для dep/redep)
 
 Поиск пользователя происходит по всем доступным идентификаторам:
@@ -30,7 +31,7 @@ from typing import Optional
 import re
 
 from db import DataBase
-from api_request import send_keitaro_postback, send_chatterfy_postback
+from api_request import send_keitaro_postback, send_chatterfy_postback, send_chatterfy_withdraw_postback
 from logger_bot import send_error_log
 from config import ENABLE_TELEGRAM_LOGS
 
@@ -902,6 +903,174 @@ async def redep_postback(
                 user_id=id,
                 additional_info={"action": "redep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id,
                                  "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/redep"},
+                full_traceback=True
+            )
+
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/withdraw")
+async def withdraw_postback(
+    id: int = Query(None, description="Telegram User ID"),
+    sum: str = Query(None, description="Withdraw amount"),
+    clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
+    subscriber_id: str = Query(
+        None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(
+        None, description="Trader ID (for search and update)")
+):
+    """
+    Вывод средств пользователя
+    Отправляет событие withdraw в Chatterfy с суммой вывода
+
+    URL для Chatterfy:
+    https://api.chatterfy.ai/api/postbacks/.../tracker-postback?tracker.event=withdraw&clickid={clickid}&fields.withdraw={sum}
+
+    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    """
+    sum_value = parse_sum_parameter(sum)
+    print(
+        f"[POSTBACK WITHDRAW] id: {id}, sum: {sum} -> {sum_value}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
+
+    try:
+        # Стандартная логика поиска/создания пользователя
+        actual_user_id = None
+        user_created = False
+        trader_id_update_info = {}
+
+        # Ищем существующего пользователя
+        actual_user_id = await find_user_for_deposit(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            clickid=clickid,
+            trader_id=trader_id
+        )
+
+        # Если не нашли и есть id - создаем нового
+        if not actual_user_id and id:
+            print(
+                f"[POSTBACK WITHDRAW] Пользователь не найден, создаем нового с id={id}")
+            user_result = await ensure_user_and_update_clickid(
+                user_id=id,
+                subscriber_id=subscriber_id,
+                trader_id=trader_id,
+                clickid=clickid
+            )
+            if user_result.get("success"):
+                actual_user_id = id
+                user_created = user_result.get("created", False)
+                print(f"[POSTBACK WITHDRAW] ✓ Создан новый пользователь {id}")
+
+        if not actual_user_id:
+            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
+            print(f"[POSTBACK WITHDRAW] ✗ {error_msg}")
+            return {"status": "error", "error": error_msg}
+
+        print(f"[POSTBACK WITHDRAW] Найден пользователь: {actual_user_id}")
+
+        # Обновляем clickid если передан
+        if clickid:
+            db.update_user_clickid(actual_user_id, clickid)
+
+        # ВАЖНО: Обновляем trader_id если передан (юзер мог зарегать новый аккаунт)
+        if trader_id and not user_created:
+            trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
+
+        # Проверка дубликата
+        if db.check_duplicate_transaction(actual_user_id, "withdraw", sum_amount=sum_value, time_window_seconds=60):
+            print(
+                f"[POSTBACK WITHDRAW] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
+            return {
+                "status": "duplicate",
+                "user_id": actual_user_id,
+                "message": "Transaction already processed within last 60 seconds"
+            }
+
+        # Записываем транзакцию в БД
+        result = db.process_postback(
+            user_id=actual_user_id,
+            action="withdraw",
+            sum_amount=sum_value,
+            commission=None,
+            raw_data={
+                "id": id,
+                "subscriber_id": subscriber_id,
+                "clickid": clickid,
+                "trader_id": trader_id,
+                "action": "withdraw",
+                "sum": sum_value,
+                "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id")
+            }
+        )
+
+        if not result.get("success"):
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[POSTBACK WITHDRAW] ✗ Ошибка записи в БД: {error_msg}")
+
+            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи WITHDRAW в БД: {error_msg}",
+                    user_id=actual_user_id,
+                    additional_info={"action": "withdraw", "sum": sum_value,
+                                     "clickid": clickid, "endpoint": "/postback/withdraw"},
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
+
+        print(
+            f"[POSTBACK WITHDRAW] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}")
+
+        user_clickid = db.get_user_clickid(actual_user_id)
+
+        # Отправляем постбэк в Chatterfy (если есть clickid)
+        chatterfy_result = None
+        if user_clickid:
+            print(
+                f"[POSTBACK WITHDRAW] Отправляем постбэк в Chatterfy: clickid={user_clickid}, withdraw={sum_value}")
+            chatterfy_result = await send_chatterfy_withdraw_postback(
+                clickid=user_clickid,
+                withdraw_amount=sum_value,
+                user_id=actual_user_id
+            )
+        else:
+            print(
+                f"[POSTBACK WITHDRAW] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
+
+        return {
+            "status": "ok",
+            "user_id": actual_user_id,
+            "action": "withdraw",
+            "sum": sum_value,
+            "user_created": user_created,
+            "trader_id_updated": trader_id_update_info.get("updated", False),
+            "old_trader_id": trader_id_update_info.get("old_trader_id"),
+            "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
+            "transaction_id": result.get("transaction_id"),
+            "chatterfy_postback": {
+                "sent": chatterfy_result.get("ok") if chatterfy_result else False,
+                "clickid": user_clickid,
+                "event": "withdraw",
+                "withdraw_amount": sum_value,
+                "url": chatterfy_result.get("full_url") if chatterfy_result else None
+            } if user_clickid else "skipped - no clickid"
+        }
+
+    except Exception as e:
+        print(f"[POSTBACK WITHDRAW] ✗ Exception: {e}")
+        import traceback
+        traceback.print_exc()
+
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_WITHDRAW_EXCEPTION",
+                error_message=f"Необработанная ошибка в WITHDRAW постбэке: {str(e)}",
+                user_id=id,
+                additional_info={"action": "withdraw", "sum": sum, "subscriber_id": subscriber_id,
+                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/withdraw"},
                 full_traceback=True
             )
 

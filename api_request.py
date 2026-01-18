@@ -230,3 +230,46 @@ async def send_chatterfy_postback(
         print(f"Результат: ✗ FAIL - {result.get('text')}")
 
     return result
+
+
+async def send_chatterfy_withdraw_postback(
+    clickid: str,
+    withdraw_amount: float,
+    retries: int = 3,
+    delay: int = 60,
+    user_id: int = None
+):
+    """
+    Постбэк в Chatterfy для отправки информации о выводе средств
+    URL: https://api.chatterfy.ai/api/postbacks/3bdc8be1-76d1-4312-9842-c68e7f88f9c8/tracker-postback?tracker.event=withdraw&clickid={clickid}&fields.withdraw={withdraw}
+
+    Параметры:
+    - clickid: clickid_chatterfry из БД
+    - withdraw_amount: сумма вывода
+    """
+    from config import CHATTERFY_POSTBACK_URL
+
+    params = {
+        "tracker.event": "withdraw",
+        "clickid": clickid,
+        "fields.withdraw": withdraw_amount
+    }
+
+    result = await fetch_with_retry(
+        CHATTERFY_POSTBACK_URL,
+        params=params,
+        retries=retries,
+        delay=delay,
+        bot=None,
+        postback_type="Chatterfy_WITHDRAW",
+        user_id=user_id
+    )
+    result["postback_type"] = "Chatterfy WITHDRAW"
+
+    print(f"📤 Постбэк Chatterfy (withdraw): {result['full_url']}")
+    if result['ok']:
+        print(f"Результат: ✓ OK")
+    else:
+        print(f"Результат: ✗ FAIL - {result.get('text')}")
+
+    return result
