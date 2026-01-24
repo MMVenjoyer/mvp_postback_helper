@@ -1,9 +1,11 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 
 from postback_router import router as postback_router
 from resolver_router import router as resolver_router
+from miniapp_router import router as miniapp_router  # NEW
 from keytaro import startup_event, shutdown_event, campaign_router
 from db import DataBase
 from logger_bot import close_bot, send_success_log
@@ -41,8 +43,8 @@ async def lifespan(app: FastAPI):
                 log_type="SERVICE_STARTED",
                 message="✅ Сервис Keitaro Postback успешно запущен",
                 additional_info={
-                    "version": "2.0.0",
-                    "features": "Postbacks + Telegram Logger"
+                    "version": "2.1.0",
+                    "features": "Postbacks + Telegram Logger + MiniApp Tracker"
                 }
             )
         except Exception as e:
@@ -81,37 +83,45 @@ async def lifespan(app: FastAPI):
 
 # Создаем FastAPI приложение с lifespan
 app = FastAPI(
-    title="Deeplink Service + Keitaro Integration + Telegram Logger",
-    description="Сервис для резолва диплинков, интеграции с Keitaro и автоматической отправки логов ошибок в Telegram",
-    version="2.0.0",
+    title="Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp",
+    description="Сервис для резолва диплинков, интеграции с Keitaro, автоматической отправки логов ошибок в Telegram и трекинга Mini App",
+    version="2.1.0",
     lifespan=lifespan
+)
+
+# CORS для Mini App (если будет на другом домене)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # В проде лучше указать конкретные домены
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Подключаем роутеры
 app.include_router(postback_router, prefix="/postback", tags=["postbacks"])
 app.include_router(resolver_router, prefix="/resolve", tags=["resolver"])
 app.include_router(campaign_router, prefix="/api", tags=["campaigns"])
+app.include_router(miniapp_router, prefix="/api", tags=["miniapp"])  # NEW
 
 
 @app.get("/", tags=["main"])
 async def root():
     return {
-        "message": "Deeplink Service + Keitaro Integration + Telegram Logger v2.0",
+        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp v2.1",
         "features": [
             "Резолв UUID из диплинков",
             "Постбэки от Keitaro",
             "Автоматическая синхронизация кампаний",
             "Фоновая обработка данных",
             "Connection pooling для надежности",
-            "🆕 Telegram Logger для ошибок"
+            "Telegram Logger для ошибок",
+            "🆕 Трекинг открытий Mini App калькулятора"
         ],
-        "improvements": [
-            "✓ Connection pooling вместо одного соединения",
-            "✓ Автоматическое переподключение при сбоях",
-            "✓ Защита от 'connection already closed' ошибок",
-            "✓ Автоматическая отправка логов ошибок в Telegram",
-            "✓ Умная фильтрация ошибок (не логирует отсутствие юзера/sub_id)"
-        ]
+        "endpoints": {
+            "miniapp_track": "POST /api/get_miniapp",
+            "miniapp_stats": "GET /api/calc_stats"
+        }
     }
 
 
@@ -123,13 +133,15 @@ async def health_check():
     try:
         db = DataBase()
         stats = db.get_detailed_users_stats()
+        calc_stats = db.get_calc_open_stats()
 
         return {
             "status": "healthy",
             "database": "connected",
             "connection_type": "pooled",
             "telegram_logs": "enabled" if ENABLE_TELEGRAM_LOGS else "disabled",
-            "stats": stats
+            "stats": stats,
+            "calc_stats": calc_stats
         }
     except Exception as e:
         return {

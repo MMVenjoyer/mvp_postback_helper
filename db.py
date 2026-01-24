@@ -1258,3 +1258,133 @@ class DataBase:
         except Exception as e:
             print(f"[DB] Ошибка проверки дубликата: {e}")
             return False
+
+
+# ==========================================
+    # МЕТОДЫ ДЛЯ TELEGRAM MINI APP (КАЛЬКУЛЯТОР)
+    # ==========================================
+
+
+    def update_calc_opened(
+        self,
+        user_id: int,
+        username: str = None,
+        first_name: str = None,
+        last_name: str = None,
+        language_code: str = None
+    ) -> Dict[str, Any]:
+        """
+        Обновляет timestamp открытия калькулятора для пользователя.
+        Если пользователя нет - создаёт его.
+
+        Args:
+            user_id: Telegram ID пользователя
+            username: Username в Telegram
+            first_name: Имя
+            last_name: Фамилия
+            language_code: Код языка
+
+        Returns:
+            Dict с результатом операции
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    now = datetime.now()
+
+                    # Проверяем существование пользователя
+                    cursor.execute(
+                        "SELECT id, is_open_calc FROM users WHERE id = %s",
+                        (user_id,)
+                    )
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        # Пользователь существует - обновляем timestamp
+                        cursor.execute("""
+                            UPDATE users 
+                            SET is_open_calc = %s
+                            WHERE id = %s
+                        """, (now, user_id))
+
+                        print(
+                            f"[DB] ✓ Обновлён is_open_calc для user_id={user_id}")
+                        return {
+                            "success": True,
+                            "created": False,
+                            "user_id": user_id,
+                            "timestamp": now.isoformat(),
+                            "previous_open": existing[1].isoformat() if existing[1] else None
+                        }
+                    else:
+                        # Пользователя нет - создаём с минимальными данными
+                        cursor.execute("""
+                            INSERT INTO users (id, is_open_calc, created_at)
+                            VALUES (%s, %s, %s)
+                        """, (user_id, now, now))
+
+                        print(
+                            f"[DB] ✓ Создан новый пользователь user_id={user_id} с is_open_calc")
+                        return {
+                            "success": True,
+                            "created": True,
+                            "user_id": user_id,
+                            "timestamp": now.isoformat()
+                        }
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка update_calc_opened: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_calc_open_stats(self) -> Dict[str, Any]:
+        """
+        Статистика по открытиям калькулятора
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    stats = {}
+
+                    # Всего открывших калькулятор
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE is_open_calc IS NOT NULL
+                    """)
+                    stats['total_opened'] = cursor.fetchone()[0]
+
+                    # Открыли сегодня
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE is_open_calc::date = CURRENT_DATE
+                    """)
+                    stats['opened_today'] = cursor.fetchone()[0]
+
+                    # Открыли за последние 7 дней
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE is_open_calc > NOW() - INTERVAL '7 days'
+                    """)
+                    stats['opened_last_7_days'] = cursor.fetchone()[0]
+
+                    # Последние 10 открытий
+                    cursor.execute("""
+                        SELECT id, is_open_calc 
+                        FROM users 
+                        WHERE is_open_calc IS NOT NULL
+                        ORDER BY is_open_calc DESC
+                        LIMIT 10
+                    """)
+                    recent = cursor.fetchall()
+                    stats['recent_opens'] = [
+                        {"user_id": row[0], "opened_at": row[1].isoformat()}
+                        for row in recent
+                    ]
+
+                    return stats
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка get_calc_open_stats: {e}")
+            return {"error": str(e)}
