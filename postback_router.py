@@ -7,13 +7,14 @@ Postback Router - обработка постбэков от внешних си
 - /postback/dep - Deposit (первый депозит)
 - /postback/redep - Redeposit (повторный депозит)
 - /postback/withdraw - Withdraw (вывод средств)
+- /postback/revenue - Revenue (выручка с лида)
 
 Параметры запросов:
 - id: Telegram User ID (обязательный)
 - subscriber_id: UUID идентификатор (опциональный, для обратной совместимости)
 - trader_id: ID трейдера из платформы (для reg)
 - clickid: Click ID из трекера Chatterfry (опциональный)
-- sum: Сумма депозита/вывода (для dep/redep/withdraw)
+- sum: Сумма депозита/вывода/выручки (для dep/redep/withdraw/revenue)
 - commission: Комиссия (для dep/redep)
 
 Поиск пользователя происходит по всем доступным идентификаторам:
@@ -61,6 +62,24 @@ def parse_sum_parameter(sum_value) -> float:
         return DEFAULT_SUM if parsed <= 0 else parsed
     except (ValueError, TypeError):
         return DEFAULT_SUM
+
+
+def parse_revenue_parameter(revenue_value) -> Optional[float]:
+    """
+    Безопасно парсит параметр revenue.
+    В отличие от sum, может быть 0 или отрицательным (для корректировок).
+    Возвращает None если значение невалидно.
+    """
+    if revenue_value is None or revenue_value == "":
+        return None
+
+    if isinstance(revenue_value, (int, float)):
+        return float(revenue_value)
+
+    try:
+        return float(revenue_value)
+    except (ValueError, TypeError):
+        return None
 
 
 def parse_commission_parameter(commission_value) -> Optional[float]:
@@ -142,7 +161,7 @@ async def find_user_for_deposit(
     trader_id: str = None
 ) -> Optional[int]:
     """
-    Ищет пользователя для операций deposit/redeposit.
+    Ищет пользователя для операций deposit/redeposit/revenue.
     """
     found = db.find_user_by_any_identifier(
         user_id=user_id,
@@ -1077,6 +1096,175 @@ async def withdraw_postback(
         return {"status": "error", "error": str(e)}
 
 
+@router.get("/revenue")
+async def revenue_postback(
+    id: int = Query(None, description="Telegram User ID"),
+    sum: str = Query(None, description="Revenue amount (actual total revenue)"),
+    clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
+    subscriber_id: str = Query(
+        None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(
+        None, description="Trader ID (for search and update)")
+):
+    """
+    Выручка с лида (Revenue)
+    
+    Логика:
+    - В transactions записываем каждое событие как есть (action='revenue', sum=переданная сумма)
+    - В users.revenue ПЕРЕЗАПИСЫВАЕМ значение на актуальное (не суммируем)
+    
+    Это нужно потому что непонятно - то ли покет шлет актуальную выручку, то ли инкрементальную.
+    Сохраняем всё в транзакциях, а в users держим последнее актуальное значение.
+
+    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    """
+    revenue_value = parse_revenue_parameter(sum)
+    
+    print(
+        f"[POSTBACK REVENUE] id: {id}, sum: {sum} -> {revenue_value}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
+
+    # Проверяем что сумма передана
+    if revenue_value is None:
+        return {"status": "error", "error": "Parameter 'sum' is required for revenue postback"}
+
+    # Проверяем что есть хотя бы один идентификатор
+    if not id and not subscriber_id and not clickid and not trader_id:
+        return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
+
+    try:
+        # Ищем пользователя
+        actual_user_id = await find_user_for_deposit(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            clickid=clickid,
+            trader_id=trader_id
+        )
+
+        user_created = False
+        trader_id_update_info = {"updated": False}
+
+        # Если не нашли и есть id - создаем нового
+        if not actual_user_id and id:
+            print(
+                f"[POSTBACK REVENUE] Пользователь не найден, создаем нового с id={id}")
+            user_result = await ensure_user_and_update_clickid(
+                user_id=id,
+                subscriber_id=subscriber_id,
+                trader_id=trader_id,
+                clickid=clickid
+            )
+            if user_result.get("success"):
+                actual_user_id = id
+                user_created = user_result.get("created", False)
+                print(f"[POSTBACK REVENUE] ✓ Создан новый пользователь {id}")
+
+        if not actual_user_id:
+            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
+            print(f"[POSTBACK REVENUE] ✗ {error_msg}")
+            return {"status": "error", "error": error_msg}
+
+        print(f"[POSTBACK REVENUE] Найден пользователь: {actual_user_id}")
+
+        # Обновляем clickid если передан
+        if clickid:
+            db.update_user_clickid(actual_user_id, clickid)
+
+        # Обновляем trader_id если передан
+        if trader_id and not user_created:
+            trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
+
+        # Получаем предыдущее значение revenue для логирования
+        previous_revenue = db.get_user_revenue(actual_user_id)
+
+        # Проверка дубликата (то же значение в течение 60 сек)
+        if db.check_duplicate_transaction(actual_user_id, "revenue", sum_amount=revenue_value, time_window_seconds=60):
+            print(
+                f"[POSTBACK REVENUE] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
+            return {
+                "status": "duplicate",
+                "user_id": actual_user_id,
+                "message": "Transaction already processed within last 60 seconds"
+            }
+
+        # 1. Записываем транзакцию (фиксируем каждое событие)
+        transaction_result = db.create_transaction(
+            user_id=actual_user_id,
+            action="revenue",
+            sum_amount=revenue_value,
+            commission=None,
+            raw_data={
+                "id": id,
+                "subscriber_id": subscriber_id,
+                "clickid": clickid,
+                "trader_id": trader_id,
+                "action": "revenue",
+                "sum": revenue_value,
+                "previous_revenue": previous_revenue,
+                "user_created": user_created,
+                "trader_id_updated": trader_id_update_info.get("updated", False),
+                "old_trader_id": trader_id_update_info.get("old_trader_id")
+            }
+        )
+
+        if not transaction_result.get("success"):
+            error_msg = transaction_result.get('error', 'Unknown error')
+            print(f"[POSTBACK REVENUE] ✗ Ошибка записи транзакции в БД: {error_msg}")
+
+            if ENABLE_TELEGRAM_LOGS:
+                await send_error_log(
+                    error_type="POSTBACK_DB_ERROR",
+                    error_message=f"Ошибка записи REVENUE в БД: {error_msg}",
+                    user_id=actual_user_id,
+                    additional_info={"action": "revenue", "sum": revenue_value,
+                                     "clickid": clickid, "endpoint": "/postback/revenue"},
+                    full_traceback=True
+                )
+
+            return {"status": "error", "error": error_msg}
+
+        # 2. Обновляем users.revenue (перезаписываем на актуальное значение)
+        revenue_update_result = db.update_user_revenue(actual_user_id, revenue_value)
+
+        if not revenue_update_result.get("success"):
+            error_msg = revenue_update_result.get('error', 'Unknown error')
+            print(f"[POSTBACK REVENUE] ⚠️ Ошибка обновления revenue в users: {error_msg}")
+            # Не возвращаем ошибку - транзакция уже записана
+
+        print(
+            f"[POSTBACK REVENUE] ✓ Записано: user={actual_user_id}, revenue={revenue_value} (было: {previous_revenue})")
+
+        return {
+            "status": "ok",
+            "user_id": actual_user_id,
+            "action": "revenue",
+            "revenue": revenue_value,
+            "previous_revenue": previous_revenue,
+            "user_created": user_created,
+            "trader_id_updated": trader_id_update_info.get("updated", False),
+            "old_trader_id": trader_id_update_info.get("old_trader_id"),
+            "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
+            "transaction_id": transaction_result.get("transaction_id"),
+            "revenue_updated": revenue_update_result.get("success", False)
+        }
+
+    except Exception as e:
+        print(f"[POSTBACK REVENUE] ✗ Exception: {e}")
+        import traceback
+        traceback.print_exc()
+
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_REVENUE_EXCEPTION",
+                error_message=f"Необработанная ошибка в REVENUE постбэке: {str(e)}",
+                user_id=id,
+                additional_info={"action": "revenue", "sum": sum, "subscriber_id": subscriber_id,
+                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/revenue"},
+                full_traceback=True
+            )
+
+        return {"status": "error", "error": str(e)}
+
+
 # ====== ВСПОМОГАТЕЛЬНЫЕ ЭНДПОИНТЫ ======
 
 @router.get("/test/{user_id}")
@@ -1089,6 +1277,7 @@ async def test_postback(user_id: int):
         transactions = db.get_user_transactions(user_id, limit=10)
         deposits_count = db.get_user_deposits_count(user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(user_id)
+        current_revenue = db.get_user_revenue(user_id)
         next_tid = 6 + deposits_count
 
         return {
@@ -1098,22 +1287,13 @@ async def test_postback(user_id: int):
             "recent_transactions": transactions,
             "deposits_count": deposits_count,
             "total_deposits_sum": total_deposits_sum,
+            "current_revenue": current_revenue,
             "next_deposit_tid": next_tid
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-@router.get("/stats")
-async def get_postback_stats():
-    """
-    Получить статистику по транзакциям
-    """
-    try:
-        stats = db.get_transactions_stats()
-        return {"status": "ok", "stats": stats}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
 
 
 @router.get("/user/{user_id}/history")
@@ -1126,6 +1306,7 @@ async def get_user_history(user_id: int, limit: int = 50):
         events = db.get_user_events_summary(user_id)
         deposits_count = db.get_user_deposits_count(user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(user_id)
+        current_revenue = db.get_user_revenue(user_id)
         next_tid = 6 + deposits_count
 
         return {
@@ -1136,6 +1317,7 @@ async def get_user_history(user_id: int, limit: int = 50):
             "total_transactions": len(transactions),
             "deposits_count": deposits_count,
             "total_deposits_sum": total_deposits_sum,
+            "current_revenue": current_revenue,
             "next_deposit_tid": next_tid
         }
     except Exception as e:
@@ -1168,13 +1350,15 @@ async def lookup_user(
             user_id = found.get("user_id")
             events = db.get_user_events_summary(user_id)
             total_deposits_sum = db.get_user_total_deposits_sum(user_id)
+            current_revenue = db.get_user_revenue(user_id)
             return {
                 "status": "ok",
                 "found": True,
                 "found_by": found.get("found_by"),
                 "user_id": user_id,
                 "events": events,
-                "total_deposits_sum": total_deposits_sum
+                "total_deposits_sum": total_deposits_sum,
+                "current_revenue": current_revenue
             }
         else:
             return {
@@ -1187,3 +1371,4 @@ async def lookup_user(
             }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+    

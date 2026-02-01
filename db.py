@@ -390,7 +390,7 @@ class DataBase:
 
         Args:
             user_id: ID пользователя
-            action: Тип действия (ftm, reg, dep, redep)
+            action: Тип действия (ftm, reg, dep, redep, revenue)
             sum_amount: Сумма депозита (опционально)
             commission: Комиссия (опционально, для dep/redep)
             raw_data: Сырые данные запроса
@@ -673,7 +673,7 @@ class DataBase:
                     cursor.execute("""
                         SELECT ftm_time, reg, reg_time, dep, dep_time, dep_sum, 
                                redep, redep_time, redep_sum, subscriber_id, trader_id,
-                               clickid_chatterfry, sub_3
+                               clickid_chatterfry, sub_3, revenue
                         FROM users
                         WHERE id = %s
                     """, (user_id,))
@@ -695,7 +695,8 @@ class DataBase:
                             "subscriber_id": result[9],
                             "trader_id": result[10],
                             "clickid_chatterfry": result[11],
-                            "sub_3": result[12]
+                            "sub_3": result[12],
+                            "revenue": float(result[13]) if result[13] else None
                         }
                     else:
                         return {"error": "User not found"}
@@ -1147,6 +1148,19 @@ class DataBase:
                     """)
                     stats['users_with_country'] = cursor.fetchone()[0]
 
+                    # Статистика по revenue
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE revenue IS NOT NULL AND revenue > 0
+                    """)
+                    stats['users_with_revenue'] = cursor.fetchone()[0]
+
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(revenue), 0) FROM users 
+                        WHERE revenue IS NOT NULL
+                    """)
+                    stats['total_revenue'] = float(cursor.fetchone()[0])
+
                     if stats['total_users'] > 0:
                         stats['percent_with_data'] = round(
                             (stats['users_with_full_data'] /
@@ -1221,8 +1235,8 @@ class DataBase:
 
         Args:
             user_id: ID пользователя
-            action: Тип действия (ftm, reg, dep, redep)
-            sum_amount: Сумма (для dep/redep)
+            action: Тип действия (ftm, reg, dep, redep, revenue)
+            sum_amount: Сумма (для dep/redep/revenue)
             time_window_seconds: Временное окно в секундах
 
         Returns:
@@ -1259,11 +1273,9 @@ class DataBase:
             print(f"[DB] Ошибка проверки дубликата: {e}")
             return False
 
-
-# ==========================================
+    # ==========================================
     # МЕТОДЫ ДЛЯ TELEGRAM MINI APP (КАЛЬКУЛЯТОР)
     # ==========================================
-
 
     def update_calc_opened(
         self,
@@ -1387,4 +1399,134 @@ class DataBase:
 
         except Exception as e:
             print(f"[DB] ✗ Ошибка get_calc_open_stats: {e}")
+            return {"error": str(e)}
+
+    # ==========================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С REVENUE (ВЫРУЧКА)
+    # ==========================================
+
+    def update_user_revenue(self, user_id: int, revenue: float) -> Dict[str, Any]:
+        """
+        Обновляет актуальную выручку пользователя.
+        Перезаписывает значение на новое (не суммирует).
+
+        Args:
+            user_id: ID пользователя
+            revenue: Актуальная сумма выручки
+
+        Returns:
+            Dict с результатом операции
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE users 
+                        SET revenue = %s 
+                        WHERE id = %s
+                        RETURNING revenue
+                    """, (revenue, user_id))
+
+                    result = cursor.fetchone()
+
+                    if result:
+                        print(
+                            f"[DB] ✓ Обновлена revenue для user {user_id}: {revenue}")
+                        return {
+                            "success": True,
+                            "updated": True,
+                            "user_id": user_id,
+                            "revenue": float(result[0]) if result[0] else None
+                        }
+                    else:
+                        print(f"[DB] ✗ Пользователь {user_id} не найден")
+                        return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления revenue: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_revenue(self, user_id: int) -> Optional[float]:
+        """
+        Получает текущую выручку пользователя из БД
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT revenue FROM users WHERE id = %s",
+                        (user_id,)
+                    )
+                    result = cursor.fetchone()
+
+                    if result and result[0] is not None:
+                        return float(result[0])
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения revenue: {e}")
+            return None
+
+    def get_revenue_stats(self) -> Dict[str, Any]:
+        """
+        Статистика по выручке
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    stats = {}
+
+                    # Всего пользователей с выручкой
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE revenue IS NOT NULL AND revenue > 0
+                    """)
+                    stats['users_with_revenue'] = cursor.fetchone()[0]
+
+                    # Общая сумма выручки
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(revenue), 0) FROM users 
+                        WHERE revenue IS NOT NULL
+                    """)
+                    stats['total_revenue'] = float(cursor.fetchone()[0])
+
+                    # Средняя выручка
+                    cursor.execute("""
+                        SELECT COALESCE(AVG(revenue), 0) FROM users 
+                        WHERE revenue IS NOT NULL AND revenue > 0
+                    """)
+                    stats['average_revenue'] = round(float(cursor.fetchone()[0]), 2)
+
+                    # Максимальная выручка
+                    cursor.execute("""
+                        SELECT COALESCE(MAX(revenue), 0) FROM users 
+                        WHERE revenue IS NOT NULL
+                    """)
+                    stats['max_revenue'] = float(cursor.fetchone()[0])
+
+                    # Топ 10 по выручке
+                    cursor.execute("""
+                        SELECT id, revenue 
+                        FROM users 
+                        WHERE revenue IS NOT NULL AND revenue > 0
+                        ORDER BY revenue DESC
+                        LIMIT 10
+                    """)
+                    top_users = cursor.fetchall()
+                    stats['top_users'] = [
+                        {"user_id": row[0], "revenue": float(row[1])}
+                        for row in top_users
+                    ]
+
+                    # Количество revenue транзакций
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM transactions 
+                        WHERE action = 'revenue'
+                    """)
+                    stats['total_revenue_transactions'] = cursor.fetchone()[0]
+
+                    return stats
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка get_revenue_stats: {e}")
             return {"error": str(e)}
