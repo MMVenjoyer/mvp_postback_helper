@@ -1098,13 +1098,13 @@ async def withdraw_postback(
 
 @router.get("/revenue")
 async def revenue_postback(
-    id: int = Query(None, description="Telegram User ID"),
+    id: int = Query(None, description="Telegram User ID (optional)"),
     sum: str = Query(None, description="Revenue amount (actual total revenue)"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
         None, description="UUID subscriber ID (for backward compatibility)"),
     trader_id: str = Query(
-        None, description="Trader ID (for search and update)")
+        None, description="Trader ID (priority over id if both point to different users)")
 ):
     """
     Выручка с лида (Revenue)
@@ -1113,10 +1113,12 @@ async def revenue_postback(
     - В transactions записываем каждое событие как есть (action='revenue', sum=переданная сумма)
     - В users.revenue ПЕРЕЗАПИСЫВАЕМ значение на актуальное (не суммируем)
     
-    Это нужно потому что непонятно - то ли покет шлет актуальную выручку, то ли инкрементальную.
-    Сохраняем всё в транзакциях, а в users держим последнее актуальное значение.
-
-    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    Приоритет поиска:
+    1. trader_id (если передан - ищем по нему первым)
+    2. id (Telegram User ID)
+    3. subscriber_id, clickid
+    
+    Если id и trader_id указывают на РАЗНЫХ юзеров - используем того, кого нашли по trader_id.
     """
     revenue_value = parse_revenue_parameter(sum)
     
@@ -1132,16 +1134,30 @@ async def revenue_postback(
         return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
 
     try:
-        # Ищем пользователя
-        actual_user_id = await find_user_for_deposit(
-            user_id=id,
-            subscriber_id=subscriber_id,
-            clickid=clickid,
-            trader_id=trader_id
-        )
-
+        actual_user_id = None
+        found_by = None
         user_created = False
         trader_id_update_info = {"updated": False}
+
+        # ПРИОРИТЕТ 1: Ищем по trader_id (главный приоритет)
+        if trader_id:
+            found = db.find_user_by_any_identifier(trader_id=trader_id)
+            if found:
+                actual_user_id = found.get("user_id")
+                found_by = "trader_id"
+                print(f"[POSTBACK REVENUE] Найден пользователь {actual_user_id} по trader_id={trader_id}")
+
+        # ПРИОРИТЕТ 2: Если не нашли по trader_id - ищем по остальным
+        if not actual_user_id:
+            found = db.find_user_by_any_identifier(
+                user_id=id,
+                subscriber_id=subscriber_id,
+                clickid_chatterfry=clickid
+            )
+            if found:
+                actual_user_id = found.get("user_id")
+                found_by = found.get("found_by")
+                print(f"[POSTBACK REVENUE] Найден пользователь {actual_user_id} по {found_by}")
 
         # Если не нашли и есть id - создаем нового
         if not actual_user_id and id:
@@ -1156,6 +1172,7 @@ async def revenue_postback(
             if user_result.get("success"):
                 actual_user_id = id
                 user_created = user_result.get("created", False)
+                found_by = "created_new"
                 print(f"[POSTBACK REVENUE] ✓ Создан новый пользователь {id}")
 
         if not actual_user_id:
@@ -1163,13 +1180,13 @@ async def revenue_postback(
             print(f"[POSTBACK REVENUE] ✗ {error_msg}")
             return {"status": "error", "error": error_msg}
 
-        print(f"[POSTBACK REVENUE] Найден пользователь: {actual_user_id}")
+        print(f"[POSTBACK REVENUE] Используем пользователя: {actual_user_id} (found_by: {found_by})")
 
         # Обновляем clickid если передан
         if clickid:
             db.update_user_clickid(actual_user_id, clickid)
 
-        # Обновляем trader_id если передан
+        # Обновляем trader_id если передан и юзер не только что создан
         if trader_id and not user_created:
             trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
 
@@ -1200,6 +1217,7 @@ async def revenue_postback(
                 "action": "revenue",
                 "sum": revenue_value,
                 "previous_revenue": previous_revenue,
+                "found_by": found_by,
                 "user_created": user_created,
                 "trader_id_updated": trader_id_update_info.get("updated", False),
                 "old_trader_id": trader_id_update_info.get("old_trader_id")
@@ -1239,6 +1257,7 @@ async def revenue_postback(
             "action": "revenue",
             "revenue": revenue_value,
             "previous_revenue": previous_revenue,
+            "found_by": found_by,
             "user_created": user_created,
             "trader_id_updated": trader_id_update_info.get("updated", False),
             "old_trader_id": trader_id_update_info.get("old_trader_id"),
@@ -1292,7 +1311,6 @@ async def test_postback(user_id: int):
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
-
 
 
 
