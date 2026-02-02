@@ -43,6 +43,35 @@ router = APIRouter()
 UUID_PATTERN = re.compile(
     r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 
+# Паттерн для определения нераскрытых плейсхолдеров типа {trader_id}, {clickid} и т.д.
+PLACEHOLDER_PATTERN = re.compile(r'^\{[^}]+\}$')
+
+
+def sanitize_identifier(value: str, param_name: str = "param") -> Optional[str]:
+    """
+    Проверяет идентификатор на валидность.
+    Возвращает None если значение:
+    - пустое
+    - является нераскрытым плейсхолдером типа {trader_id}
+    - совпадает с именем параметра (trader_id='trader_id')
+    """
+    if not value or value.strip() == "":
+        return None
+    
+    value = value.strip()
+    
+    # Проверяем на плейсхолдер типа {trader_id}
+    if PLACEHOLDER_PATTERN.match(value):
+        print(f"[POSTBACK] ⚠️ Игнорируем плейсхолдер {param_name}={value}")
+        return None
+    
+    # Проверяем на буквальное имя параметра (trader_id='trader_id')
+    if value.lower() == param_name.lower():
+        print(f"[POSTBACK] ⚠️ Игнорируем невалидный {param_name}={value}")
+        return None
+    
+    return value
+
 
 def parse_sum_parameter(sum_value) -> float:
     """
@@ -214,6 +243,11 @@ async def ftm_postback(
     """
     FTM (First Time Message) постбэк
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     print(
         f"[POSTBACK FTM] id: {id}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
 
@@ -344,6 +378,11 @@ async def reg_postback(
     Регистрация пользователя.
     trader_id обновляется ВСЕГДА когда передан (юзер мог зарегать новый аккаунт).
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     print(
         f"[POSTBACK REG] id: {id}, trader_id: {trader_id}, clickid: {clickid}, subscriber_id: {subscriber_id}")
 
@@ -489,6 +528,11 @@ async def dep_postback(
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
@@ -713,10 +757,15 @@ async def redep_postback(
 ):
     """
     Редепозит пользователя (повторный депозит)
-    Отправляет событие DEP в Keitaro и постбэк в Chatterfy с суммой депозитов (event: sumdep_postback_rd)
+    Отправляет событие DEP в Keitaro и постбэк в Chatterfy с суммой депозитов (event: pb_redep)
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
@@ -829,12 +878,12 @@ async def redep_postback(
         chatterfy_result = None
         if user_clickid:
             print(
-                f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=sumdep_postback_rd")
+                f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=pb_redep")
             chatterfy_result = await send_chatterfy_postback(
                 clickid=user_clickid,
                 sumdep=total_deposits_sum,
                 previous_dep=sum_value,
-                is_redep=True,  # REDEP использует event "sumdep_postback_rd"
+                is_redep=True,  # REDEP использует event "pb_redep"
                 user_id=actual_user_id
             )
         else:
@@ -861,7 +910,7 @@ async def redep_postback(
                 "chatterfy_postback": {
                     "sent": chatterfy_result.get("ok") if chatterfy_result else False,
                     "clickid": user_clickid,
-                    "event": "sumdep_postback_rd",
+                    "event": "pb_redep",
                     "sumdep": total_deposits_sum,
                     "previous_dep": sum_value,
                     "url": chatterfy_result.get("full_url") if chatterfy_result else None
@@ -903,7 +952,7 @@ async def redep_postback(
             "chatterfy_postback": {
                 "sent": chatterfy_result.get("ok") if chatterfy_result else False,
                 "clickid": user_clickid,
-                "event": "sumdep_postback_rd",
+                "event": "pb_redep",
                 "sumdep": total_deposits_sum,
                 "previous_dep": sum_value,
                 "url": chatterfy_result.get("full_url") if chatterfy_result else None
@@ -947,6 +996,11 @@ async def withdraw_postback(
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     sum_value = parse_sum_parameter(sum)
     print(
         f"[POSTBACK WITHDRAW] id: {id}, sum: {sum} -> {sum_value}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
@@ -1120,6 +1174,11 @@ async def revenue_postback(
     
     Если id и trader_id указывают на РАЗНЫХ юзеров - используем того, кого нашли по trader_id.
     """
+    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
     revenue_value = parse_revenue_parameter(sum)
     
     print(
@@ -1283,110 +1342,3 @@ async def revenue_postback(
 
         return {"status": "error", "error": str(e)}
 
-
-# ====== ВСПОМОГАТЕЛЬНЫЕ ЭНДПОИНТЫ ======
-
-@router.get("/test/{user_id}")
-async def test_postback(user_id: int):
-    """
-    Тестовый эндпоинт для проверки данных пользователя
-    """
-    try:
-        events = db.get_user_events_summary(user_id)
-        transactions = db.get_user_transactions(user_id, limit=10)
-        deposits_count = db.get_user_deposits_count(user_id)
-        total_deposits_sum = db.get_user_total_deposits_sum(user_id)
-        current_revenue = db.get_user_revenue(user_id)
-        next_tid = 6 + deposits_count
-
-        return {
-            "status": "ok",
-            "user_id": user_id,
-            "events": events,
-            "recent_transactions": transactions,
-            "deposits_count": deposits_count,
-            "total_deposits_sum": total_deposits_sum,
-            "current_revenue": current_revenue,
-            "next_deposit_tid": next_tid
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
-
-@router.get("/user/{user_id}/history")
-async def get_user_history(user_id: int, limit: int = 50):
-    """
-    Получить историю транзакций пользователя
-    """
-    try:
-        transactions = db.get_user_transactions(user_id, limit)
-        events = db.get_user_events_summary(user_id)
-        deposits_count = db.get_user_deposits_count(user_id)
-        total_deposits_sum = db.get_user_total_deposits_sum(user_id)
-        current_revenue = db.get_user_revenue(user_id)
-        next_tid = 6 + deposits_count
-
-        return {
-            "status": "ok",
-            "user_id": user_id,
-            "events_summary": events,
-            "transactions": transactions,
-            "total_transactions": len(transactions),
-            "deposits_count": deposits_count,
-            "total_deposits_sum": total_deposits_sum,
-            "current_revenue": current_revenue,
-            "next_deposit_tid": next_tid
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
-@router.get("/lookup")
-async def lookup_user(
-    id: int = Query(None, description="Telegram User ID"),
-    subscriber_id: str = Query(None, description="UUID subscriber ID"),
-    clickid: str = Query(None, description="Click ID from Chatterfry"),
-    trader_id: str = Query(None, description="Trader ID")
-):
-    """
-    Поиск пользователя по любому идентификатору.
-    Поддерживает: id, subscriber_id, clickid, trader_id
-    """
-    if not id and not subscriber_id and not clickid and not trader_id:
-        return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
-
-    try:
-        found = db.find_user_by_any_identifier(
-            user_id=id,
-            subscriber_id=subscriber_id,
-            clickid_chatterfry=clickid,
-            trader_id=trader_id
-        )
-
-        if found:
-            user_id = found.get("user_id")
-            events = db.get_user_events_summary(user_id)
-            total_deposits_sum = db.get_user_total_deposits_sum(user_id)
-            current_revenue = db.get_user_revenue(user_id)
-            return {
-                "status": "ok",
-                "found": True,
-                "found_by": found.get("found_by"),
-                "user_id": user_id,
-                "events": events,
-                "total_deposits_sum": total_deposits_sum,
-                "current_revenue": current_revenue
-            }
-        else:
-            return {
-                "status": "ok",
-                "found": False,
-                "searched_id": id,
-                "searched_subscriber_id": subscriber_id,
-                "searched_clickid": clickid,
-                "searched_trader_id": trader_id
-            }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-    
