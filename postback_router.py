@@ -1310,19 +1310,53 @@ async def revenue_postback(
         print(
             f"[POSTBACK REVENUE] ✓ Записано: user={actual_user_id}, revenue={revenue_value} (было: {previous_revenue})")
 
+        # 3. Отправляем постбэк в Keitaro ТОЛЬКО если значение изменилось
+        keitaro_result = None
+        revenue_changed = previous_revenue != revenue_value
+        
+        if not revenue_changed:
+            print(
+                f"[POSTBACK REVENUE] ⚠️ Revenue не изменился ({revenue_value}), постбэк в Keitaro не отправлен")
+        else:
+            # Получаем subid для отправки в Keitaro
+            subid = db.get_user_sub_id(actual_user_id)
+            
+            if not subid:
+                print(
+                    f"[POSTBACK REVENUE] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
+            else:
+                print(
+                    f"[POSTBACK REVENUE] Отправляем постбэк в Keitaro для subid: {subid}, status=revenue, payout={revenue_value}")
+                keitaro_result = await send_keitaro_postback(
+                    subid=subid,
+                    status="revenue",
+                    payout=revenue_value,
+                    tid=None,  # tid не требуется для revenue
+                    user_id=actual_user_id
+                )
+
         return {
             "status": "ok",
             "user_id": actual_user_id,
             "action": "revenue",
             "revenue": revenue_value,
             "previous_revenue": previous_revenue,
+            "revenue_changed": revenue_changed,
             "found_by": found_by,
             "user_created": user_created,
             "trader_id_updated": trader_id_update_info.get("updated", False),
             "old_trader_id": trader_id_update_info.get("old_trader_id"),
             "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
             "transaction_id": transaction_result.get("transaction_id"),
-            "revenue_updated": revenue_update_result.get("success", False)
+            "revenue_updated": revenue_update_result.get("success", False),
+            "keitaro_postback": {
+                "sent": keitaro_result.get("ok") if keitaro_result else False,
+                "subid": db.get_user_sub_id(actual_user_id) if revenue_changed else None,
+                "status_sent": "revenue",
+                "payout": revenue_value,
+                "url": keitaro_result.get("full_url") if keitaro_result else None,
+                "response": keitaro_result.get("text")[:100] if keitaro_result and keitaro_result.get("text") else None
+            } if revenue_changed else "skipped - same value"
         }
 
     except Exception as e:
@@ -1341,4 +1375,3 @@ async def revenue_postback(
             )
 
         return {"status": "error", "error": str(e)}
-
