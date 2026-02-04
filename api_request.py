@@ -273,3 +273,99 @@ async def send_chatterfy_withdraw_postback(
         print(f"Результат: ✗ FAIL - {result.get('text')}")
 
     return result
+
+
+def determine_source_from_company(company: str) -> str:
+    """
+    Определяет source на основе названия кампании.
+    
+    Логика:
+    1. Если company пустое/None - возвращаем "direct"
+    2. Если в company есть "fb", "tmz", "shade" (case insensitive) - возвращаем "facebook"
+    3. Если в company есть "google" (case insensitive) - возвращаем "google"
+    4. Иначе - возвращаем "facebook" (по умолчанию для упрощения маппинга)
+    
+    Args:
+        company: Название кампании из БД
+        
+    Returns:
+        source: "direct", "facebook" или "google"
+    """
+    # Если company пустое - это direct трафик
+    if not company or company.strip() == "" or company == "None":
+        return "direct"
+    
+    company_lower = company.lower()
+    
+    # Проверяем на Google
+    if "google" in company_lower:
+        return "google"
+    
+    # Проверяем на Facebook маркеры (fb, tmz, shade)
+    facebook_markers = ["fb", "tmz", "shade"]
+    for marker in facebook_markers:
+        if marker in company_lower:
+            return "facebook"
+    
+    # По умолчанию - facebook (для упрощения маппинга)
+    return "facebook"
+
+
+async def send_chatterfy_ftm_postback(
+    clickid: str,
+    company: str,
+    retries: int = 3,
+    delay: int = 60,
+    user_id: int = None
+):
+    """
+    Постбэк в Chatterfy при событии FTM (First Time Message)
+    URL: https://api.chatterfy.ai/api/postbacks/3bdc8be1-76d1-4312-9842-c68e7f88f9c8/tracker-postback
+         ?tracker.event=new_postback_event_7&clickid={clickid}&fields.source={source}&fields.company={company}
+
+    Параметры:
+    - clickid: clickid_chatterfry из БД
+    - company: название кампании из БД (используется для определения source)
+    
+    Source определяется автоматически:
+    - "direct" - если company пустое
+    - "facebook" - если в company есть fb, tmz, shade
+    - "google" - если в company есть google
+    - "facebook" - по умолчанию (если ничего не подошло)
+    """
+    from config import CHATTERFY_POSTBACK_URL
+
+    # Определяем source на основе company
+    source = determine_source_from_company(company)
+    
+    # Если company пустое - передаем "direct" вместо пустой строки
+    company_value = company if (company and company.strip() and company != "None") else "direct"
+
+    params = {
+        "tracker.event": "new_postback_event_7",
+        "clickid": clickid,
+        "fields.source": source,
+        "fields.company": company_value
+    }
+
+    result = await fetch_with_retry(
+        CHATTERFY_POSTBACK_URL,
+        params=params,
+        retries=retries,
+        delay=delay,
+        bot=None,
+        postback_type="Chatterfy_FTM_SOURCE",
+        user_id=user_id
+    )
+    result["postback_type"] = "Chatterfy FTM_SOURCE"
+    result["source"] = source
+    result["company"] = company_value
+
+    print(f"📤 Постбэк Chatterfy FTM (new_postback_event_7): {result['full_url']}")
+    print(f"   Source: {source}, Company: {company_value}")
+    if result['ok']:
+        print(f"Результат: ✓ OK")
+    else:
+        print(f"Результат: ✗ FAIL - {result.get('text')}")
+
+    return result

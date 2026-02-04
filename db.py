@@ -1222,6 +1222,34 @@ class DataBase:
             print(f"[DB] Ошибка получения страны: {e}")
             return None
 
+    def get_user_company(self, user_id: int) -> Optional[str]:
+        """
+        Получает название кампании (company) пользователя из БД
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            Название кампании или None если не найдено
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT company FROM users WHERE id = %s", (user_id,))
+                    result = cursor.fetchone()
+
+                    if result and result[0]:
+                        print(f"[DB] Найдена company для user {user_id}: {result[0]}")
+                        return result[0]
+                    
+                    print(f"[DB] Company не найдена для user {user_id}")
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения company: {e}")
+            return None
+
     def check_duplicate_transaction(
         self,
         user_id: int,

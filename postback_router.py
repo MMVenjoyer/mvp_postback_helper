@@ -32,7 +32,12 @@ from typing import Optional
 import re
 
 from db import DataBase
-from api_request import send_keitaro_postback, send_chatterfy_postback, send_chatterfy_withdraw_postback
+from api_request import (
+    send_keitaro_postback, 
+    send_chatterfy_postback, 
+    send_chatterfy_withdraw_postback,
+    send_chatterfy_ftm_postback
+)
 from logger_bot import send_error_log
 from config import ENABLE_TELEGRAM_LOGS
 
@@ -242,6 +247,10 @@ async def ftm_postback(
 ):
     """
     FTM (First Time Message) постбэк
+    
+    При FTM также отправляется постбэк в Chatterfy с source и company:
+    - source определяется по company: direct/facebook/google
+    - company берется из БД
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -314,7 +323,28 @@ async def ftm_postback(
         print(f"[POSTBACK FTM] ✓ Записано в БД для user {id}")
 
         subid = db.get_user_sub_id(id)
+        user_clickid = db.get_user_clickid(id)
+        user_company = db.get_user_company(id)
 
+        # ========================================
+        # Отправка постбэка в Chatterfy с source/company
+        # ========================================
+        chatterfy_ftm_result = None
+        if user_clickid:
+            print(
+                f"[POSTBACK FTM] Отправляем постбэк в Chatterfy: clickid={user_clickid}, company={user_company}")
+            chatterfy_ftm_result = await send_chatterfy_ftm_postback(
+                clickid=user_clickid,
+                company=user_company,
+                user_id=id
+            )
+        else:
+            print(
+                f"[POSTBACK FTM] ⚠️ clickid_chatterfry не найден для user {id}, постбэк в Chatterfy не отправлен")
+
+        # ========================================
+        # Отправка постбэка в Keitaro
+        # ========================================
         if not subid:
             print(
                 f"[POSTBACK FTM] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
@@ -325,7 +355,14 @@ async def ftm_postback(
                 "user_created": user_created,
                 "trader_id_updated": trader_id_updated,
                 "transaction_id": result.get("transaction_id"),
-                "keitaro_postback": "skipped - no subid"
+                "keitaro_postback": "skipped - no subid",
+                "chatterfy_ftm_postback": {
+                    "sent": chatterfy_ftm_result.get("ok") if chatterfy_ftm_result else False,
+                    "clickid": user_clickid,
+                    "source": chatterfy_ftm_result.get("source") if chatterfy_ftm_result else None,
+                    "company": chatterfy_ftm_result.get("company") if chatterfy_ftm_result else None,
+                    "url": chatterfy_ftm_result.get("full_url") if chatterfy_ftm_result else None
+                } if user_clickid else "skipped - no clickid"
             }
 
         print(
@@ -345,7 +382,14 @@ async def ftm_postback(
                 "tid": 4,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
-            }
+            },
+            "chatterfy_ftm_postback": {
+                "sent": chatterfy_ftm_result.get("ok") if chatterfy_ftm_result else False,
+                "clickid": user_clickid,
+                "source": chatterfy_ftm_result.get("source") if chatterfy_ftm_result else None,
+                "company": chatterfy_ftm_result.get("company") if chatterfy_ftm_result else None,
+                "url": chatterfy_ftm_result.get("full_url") if chatterfy_ftm_result else None
+            } if user_clickid else "skipped - no clickid"
         }
 
     except Exception as e:
