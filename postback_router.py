@@ -1194,6 +1194,40 @@ async def withdraw_postback(
         return {"status": "error", "error": str(e)}
 
 
+@router.get("/get_status/reg")
+async def get_status_reg(
+    id: int = Query(..., description="Telegram User ID")
+):
+    """Проверяет статус регистрации пользователя (есть ли reg_time)"""
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT reg_time FROM users WHERE id = %s", (id,))
+                result = cursor.fetchone()
+                if result and result[0] is not None:
+                    return {"status": True}
+                return {"status": False}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/get_status/dep")
+async def get_status_dep(
+    id: int = Query(..., description="Telegram User ID")
+):
+    """Проверяет статус депозита пользователя (есть ли dep_time)"""
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT dep_time FROM users WHERE id = %s", (id,))
+                result = cursor.fetchone()
+                if result and result[0] is not None:
+                    return {"status": True}
+                return {"status": False}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    
+
 @router.get("/revenue")
 async def revenue_postback(
     id: int = Query(None, description="Telegram User ID (optional)"),
