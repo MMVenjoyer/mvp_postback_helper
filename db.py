@@ -1495,6 +1495,121 @@ class DataBase:
             print(f"[DB] Ошибка получения revenue: {e}")
             return None
 
+    # ==========================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С МЕНЕДЖЕРАМИ
+    # ==========================================
+
+    def update_user_manager(self, user_id: int, manager: str) -> Dict[str, Any]:
+        """
+        Обновляет менеджера пользователя.
+        ВСЕГДА перезаписывает (менеджер может меняться).
+
+        Args:
+            user_id: ID пользователя
+            manager: Имя/номер менеджера (manager1, manager2, ...)
+
+        Returns:
+            Dict с результатом операции
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE users 
+                        SET manager = %s, manager_assigned_at = %s
+                        WHERE id = %s
+                        RETURNING manager
+                    """, (manager, datetime.now(), user_id))
+
+                    result = cursor.fetchone()
+
+                    if result:
+                        print(f"[DB] ✓ Обновлен manager для user {user_id}: {manager}")
+                        return {"success": True, "updated": True, "manager": manager}
+                    else:
+                        print(f"[DB] ✗ Пользователь {user_id} не найден")
+                        return {"success": False, "error": "User not found"}
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления manager: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_manager(self, user_id: int) -> Optional[str]:
+        """
+        Получает менеджера пользователя из БД
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT manager FROM users WHERE id = %s",
+                        (user_id,)
+                    )
+                    result = cursor.fetchone()
+
+                    if result and result[0]:
+                        return result[0]
+                    return None
+
+        except Exception as e:
+            print(f"[DB] Ошибка получения manager: {e}")
+            return None
+
+    def get_manager_stats(self) -> Dict[str, Any]:
+        """
+        Статистика по менеджерам
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    stats = {}
+
+                    # Распределение по менеджерам
+                    cursor.execute("""
+                        SELECT manager, COUNT(*) as count
+                        FROM users 
+                        WHERE manager IS NOT NULL
+                        GROUP BY manager 
+                        ORDER BY count DESC
+                    """)
+                    manager_dist = cursor.fetchall()
+                    stats['by_manager'] = [
+                        {"manager": row[0], "count": row[1]} for row in manager_dist
+                    ]
+
+                    # Всего с менеджером
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users WHERE manager IS NOT NULL
+                    """)
+                    stats['total_with_manager'] = cursor.fetchone()[0]
+
+                    # Без менеджера
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users WHERE manager IS NULL
+                    """)
+                    stats['total_without_manager'] = cursor.fetchone()[0]
+
+                    # Менеджеры с депозитами
+                    cursor.execute("""
+                        SELECT u.manager, COUNT(*) as deps, COALESCE(SUM(t.sum), 0) as total_sum
+                        FROM users u
+                        JOIN transactions t ON u.id = t.user_id
+                        WHERE u.manager IS NOT NULL AND t.action IN ('dep', 'redep')
+                        GROUP BY u.manager
+                        ORDER BY total_sum DESC
+                    """)
+                    manager_deps = cursor.fetchall()
+                    stats['deposits_by_manager'] = [
+                        {"manager": row[0], "deposits_count": row[1], "total_sum": float(row[2])}
+                        for row in manager_deps
+                    ]
+
+                    return stats
+
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка get_manager_stats: {e}")
+            return {"error": str(e)}
+
     def get_revenue_stats(self) -> Dict[str, Any]:
         """
         Статистика по выручке

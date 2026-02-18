@@ -1228,6 +1228,129 @@ async def get_status_dep(
         return {"status": "error", "error": str(e)}
     
 
+@router.get("/manager{manager_id}")
+async def manager_postback(
+    manager_id: int,
+    id: int = Query(..., description="Telegram User ID"),
+    clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
+    subscriber_id: str = Query(None, description="UUID subscriber ID (optional)"),
+    trader_id: str = Query(None, description="Trader ID (optional)")
+):
+    """
+    Назначение менеджера лиду.
+    
+    URL формат:
+    /postback/manager1?id={chatId}&clickid={tracker.clickid}
+    /postback/manager2?id={chatId}&clickid={tracker.clickid}
+    
+    manager_id берётся из URL path (1, 2, и т.д.)
+    """
+    # Санитизация идентификаторов
+    trader_id = sanitize_identifier(trader_id, "trader_id")
+    clickid = sanitize_identifier(clickid, "clickid")
+    subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+
+    manager_name = f"manager{manager_id}"
+
+    print(
+        f"[POSTBACK MANAGER] id: {id}, manager: {manager_name}, clickid: {clickid}, subscriber_id: {subscriber_id}, trader_id: {trader_id}")
+
+    try:
+        # Гарантируем что юзер существует + обновляем clickid/trader_id
+        user_result = await ensure_user_and_update_clickid(
+            user_id=id,
+            subscriber_id=subscriber_id,
+            trader_id=trader_id,
+            clickid=clickid
+        )
+
+        if not user_result.get("success"):
+            error_msg = user_result.get('error', 'Unknown error')
+            print(f"[POSTBACK MANAGER] ✗ Ошибка создания/поиска пользователя: {error_msg}")
+            return {"status": "error", "error": error_msg}
+
+        user_created = user_result.get("created", False)
+        trader_id_updated = user_result.get("trader_id_updated", False)
+
+        if user_created:
+            print(f"[POSTBACK MANAGER] ✓ Создан новый пользователь {id}")
+
+        # Получаем предыдущего менеджера
+        old_manager = db.get_user_manager(id)
+
+        # Обновляем менеджера
+        manager_result = db.update_user_manager(id, manager_name)
+
+        if not manager_result.get("success"):
+            error_msg = manager_result.get('error', 'Unknown error')
+            print(f"[POSTBACK MANAGER] ✗ Ошибка обновления менеджера: {error_msg}")
+            return {"status": "error", "error": error_msg}
+
+        # Записываем транзакцию для истории
+        db.create_transaction(
+            user_id=id,
+            action="manager_assign",
+            sum_amount=None,
+            raw_data={
+                "id": id,
+                "action": "manager_assign",
+                "manager": manager_name,
+                "old_manager": old_manager,
+                "clickid": clickid,
+                "subscriber_id": subscriber_id,
+                "trader_id": trader_id,
+                "user_created": user_created,
+                "trader_id_updated": trader_id_updated
+            }
+        )
+
+        manager_changed = old_manager != manager_name
+
+        print(
+            f"[POSTBACK MANAGER] ✓ Менеджер назначен: user={id}, manager={manager_name}"
+            + (f" (был: {old_manager})" if old_manager and manager_changed else ""))
+
+        return {
+            "status": "ok",
+            "user_id": id,
+            "action": "manager_assign",
+            "manager": manager_name,
+            "old_manager": old_manager,
+            "manager_changed": manager_changed,
+            "user_created": user_created,
+            "trader_id_updated": trader_id_updated
+        }
+
+    except Exception as e:
+        print(f"[POSTBACK MANAGER] ✗ Exception: {e}")
+        import traceback
+        traceback.print_exc()
+
+        if ENABLE_TELEGRAM_LOGS:
+            await send_error_log(
+                error_type="POSTBACK_MANAGER_EXCEPTION",
+                error_message=f"Ошибка в MANAGER постбэке: {str(e)}",
+                user_id=id,
+                additional_info={
+                    "action": "manager_assign",
+                    "manager": manager_name,
+                    "endpoint": f"/postback/manager{manager_id}"
+                },
+                full_traceback=True
+            )
+
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/manager_stats")
+async def get_manager_stats():
+    """Статистика по менеджерам"""
+    try:
+        stats = db.get_manager_stats()
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 @router.get("/revenue")
 async def revenue_postback(
     id: int = Query(None, description="Telegram User ID (optional)"),
