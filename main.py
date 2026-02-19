@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # Запускаем фоновый сервис синхронизации кампаний
-    asyncio.create_task(startup_event())
+    # asyncio.create_task(startup_event())
 
     # Отправляем уведомление о старте в Telegram (если включено)
     if ENABLE_TELEGRAM_LOGS:
