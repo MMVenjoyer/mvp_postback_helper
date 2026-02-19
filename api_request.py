@@ -7,9 +7,52 @@ from urllib.parse import urlencode
 from logger_bot import send_error_log
 
 
-async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, postback_type=None, user_id=None):
+# ==========================================
+# SHARED HTTP SESSION (один на воркер-процесс)
+# ==========================================
+_http_session: Optional[aiohttp.ClientSession] = None
+
+
+async def get_http_session() -> aiohttp.ClientSession:
+    """
+    Получает или создает shared HTTP сессию для текущего воркера.
+    Переиспользует TCP соединения вместо создания новых на каждый запрос.
+    """
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        connector = aiohttp.TCPConnector(
+            limit=20,              # макс одновременных соединений
+            keepalive_timeout=30,  # держим соединения открытыми 30с
+            enable_cleanup_closed=True
+        )
+        _http_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=10)  # 10с глобальный таймаут
+        )
+    return _http_session
+
+
+async def close_http_session():
+    """
+    Закрывает HTTP сессию (вызывается при shutdown приложения)
+    """
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+        _http_session = None
+        print("[HTTP] ✓ HTTP сессия закрыта")
+
+
+async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postback_type=None, user_id=None):
     """
     Отправка HTTP запроса с повторными попытками и логированием ошибок
+    
+    v2.2: Оптимизация для предотвращения блокировки воркеров
+    - timeout: 30с -> 10с (через shared session)
+    - retries: 3 -> 2
+    - delay: 60с -> 5с
+    - shared session: переиспользование TCP соединений
+    - Максимальная блокировка одного вызова: ~25с вместо ~270с
     """
     start_time = datetime.now()
     last_exception = None
@@ -19,54 +62,55 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
     if params:
         full_url = f"{url}?{urlencode(params)}"
 
+    session = await get_http_session()
+
     for attempt in range(1, retries + 1):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=30) as resp:
-                    text = await resp.text()
+            async with session.get(url, params=params) as resp:
+                text = await resp.text()
 
-                    if resp.status == 200:
-                        return {
-                            "ok": True,
-                            "status": resp.status,
-                            "text": text,
-                            "attempt": attempt,
-                            "error_type": None,
-                            "timestamp": start_time.strftime('%H:%M:%S'),
-                            "duration": (datetime.now() - start_time).total_seconds(),
-                            "full_url": full_url
-                        }
-                    else:
-                        last_exception = Exception(
-                            f"HTTP {resp.status}: {text[:200]}...")
+                if resp.status == 200:
+                    return {
+                        "ok": True,
+                        "status": resp.status,
+                        "text": text,
+                        "attempt": attempt,
+                        "error_type": None,
+                        "timestamp": start_time.strftime('%H:%M:%S'),
+                        "duration": (datetime.now() - start_time).total_seconds(),
+                        "full_url": full_url
+                    }
+                else:
+                    last_exception = Exception(
+                        f"HTTP {resp.status}: {text[:200]}...")
 
-                        # Логируем HTTP ошибку если есть bot и это последняя попытка
-                        if attempt == retries and ENABLE_TELEGRAM_LOGS:
-                            await send_error_log(
-                                error_type="KEITARO_HTTP_ERROR",
-                                error_message=f"HTTP {resp.status} при отправке постбэка",
-                                user_id=user_id,
-                                additional_info={
-                                    "url": full_url,
-                                    "postback_type": postback_type,
-                                    "status_code": resp.status,
-                                    "response": text[:200],
-                                    "attempts": attempt
-                                },
-                                full_traceback=False
-                            )
+                    # Логируем HTTP ошибку если это последняя попытка
+                    if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                        await send_error_log(
+                            error_type="KEITARO_HTTP_ERROR",
+                            error_message=f"HTTP {resp.status} при отправке постбэка",
+                            user_id=user_id,
+                            additional_info={
+                                "url": full_url,
+                                "postback_type": postback_type,
+                                "status_code": resp.status,
+                                "response": text[:200],
+                                "attempts": attempt
+                            },
+                            full_traceback=False
+                        )
 
         except asyncio.TimeoutError:
-            last_exception = Exception("Таймаут запроса (30 сек)")
+            last_exception = Exception("Таймаут запроса (10 сек)")
             if attempt == retries and ENABLE_TELEGRAM_LOGS:
                 await send_error_log(
                     error_type="KEITARO_TIMEOUT",
-                    error_message="Превышено время ожидания ответа от Keitaro",
+                    error_message="Превышено время ожидания ответа",
                     user_id=user_id,
                     additional_info={
                         "url": full_url,
                         "postback_type": postback_type,
-                        "timeout": "30 сек",
+                        "timeout": "10 сек",
                         "attempts": attempt
                     },
                     full_traceback=False
@@ -102,7 +146,7 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
                     full_traceback=True
                 )
 
-        # Ждём перед следующей попыткой
+        # Ждём перед следующей попыткой (5с * attempt)
         if attempt < retries:
             wait_time = delay * attempt
             await asyncio.sleep(wait_time)
@@ -134,7 +178,7 @@ async def fetch_with_retry(url, params=None, retries=3, delay=60, bot=None, post
     }
 
 
-async def send_keitaro_postback(subid: str, status: str, payout: float = None, tid: int = None, retries=3, delay=60, bot=None, user_id=None):
+async def send_keitaro_postback(subid: str, status: str, payout: float = None, tid: int = None, retries=2, delay=5, bot=None, user_id=None):
     """
     Постбэк в Keitaro
     URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100&tid=4
@@ -185,8 +229,8 @@ async def send_chatterfy_postback(
     sumdep: float,
     previous_dep: float,
     is_redep: bool = False,
-    retries: int = 3,
-    delay: int = 60,
+    retries: int = 2,
+    delay: int = 5,
     user_id: int = None
 ):
     """
@@ -235,8 +279,8 @@ async def send_chatterfy_postback(
 async def send_chatterfy_withdraw_postback(
     clickid: str,
     withdraw_amount: float,
-    retries: int = 3,
-    delay: int = 60,
+    retries: int = 2,
+    delay: int = 5,
     user_id: int = None
 ):
     """
@@ -314,8 +358,8 @@ def determine_source_from_company(company: str) -> str:
 async def send_chatterfy_ftm_postback(
     clickid: str,
     company: str,
-    retries: int = 3,
-    delay: int = 60,
+    retries: int = 2,
+    delay: int = 5,
     user_id: int = None
 ):
     """

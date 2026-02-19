@@ -25,10 +25,16 @@ Postback Router - обработка постбэков от внешних си
 
 ВАЖНО: trader_id обновляется при КАЖДОМ постбэке, если передан.
 Это нужно потому что юзеры могут регистрировать новые аккаунты на платформе.
+
+v2.2: Параллельная отправка постбэков через asyncio.gather
+- FTM: Chatterfy FTM + Keitaro параллельно
+- DEP: Chatterfy DEP + Keitaro параллельно
+- REDEP: Chatterfy REDEP + Keitaro параллельно
 """
 
 from fastapi import APIRouter, Query
 from typing import Optional
+import asyncio
 import re
 
 from db import DataBase
@@ -237,6 +243,53 @@ async def update_trader_id_if_needed(user_id: int, trader_id: str) -> dict:
         return {"updated": False, "reason": "db_error", "error": update_result.get("error")}
 
 
+async def send_postbacks_parallel(**named_coros):
+    """
+    Выполняет несколько постбэков параллельно через asyncio.gather.
+    
+    Args:
+        **named_coros: именованные корутины, None значения пропускаются
+        
+    Returns:
+        dict с результатами по именам. Если корутина была None — её нет в результате.
+        Если корутина выбросила исключение — возвращается fallback dict.
+    
+    Пример:
+        results = await send_postbacks_parallel(
+            chatterfy=send_chatterfy_postback(...) if clickid else None,
+            keitaro=send_keitaro_postback(...) if subid else None,
+        )
+        chatterfy_result = results.get('chatterfy')  # dict или None
+        keitaro_result = results.get('keitaro')       # dict или None
+    """
+    # Фильтруем None корутины
+    active = {k: v for k, v in named_coros.items() if v is not None}
+    
+    if not active:
+        return {}
+    
+    keys = list(active.keys())
+    coros = list(active.values())
+    
+    # return_exceptions=True чтобы одна ошибка не отменяла остальные
+    raw_results = await asyncio.gather(*coros, return_exceptions=True)
+    
+    output = {}
+    for key, result in zip(keys, raw_results):
+        if isinstance(result, Exception):
+            print(f"[PARALLEL] ⚠️ Ошибка в {key}: {result}")
+            output[key] = {
+                "ok": False,
+                "text": str(result),
+                "error_type": type(result).__name__,
+                "full_url": "unknown"
+            }
+        else:
+            output[key] = result
+    
+    return output
+
+
 @router.get("/ftm")
 async def ftm_postback(
     id: int = Query(..., description="Telegram User ID"),
@@ -251,6 +304,8 @@ async def ftm_postback(
     При FTM также отправляется постбэк в Chatterfy с source и company:
     - source определяется по company: direct/facebook/google
     - company берется из БД
+    
+    v2.2: Chatterfy FTM + Keitaro отправляются параллельно
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -327,48 +382,32 @@ async def ftm_postback(
         user_company = db.get_user_company(id)
 
         # ========================================
-        # Отправка постбэка в Chatterfy с source/company
+        # Параллельная отправка постбэков (v2.2)
         # ========================================
-        chatterfy_ftm_result = None
+        if subid:
+            print(
+                f"[POSTBACK FTM] Отправляем постбэк в Keitaro для subid: {subid}, tid=4")
         if user_clickid:
             print(
                 f"[POSTBACK FTM] Отправляем постбэк в Chatterfy: clickid={user_clickid}, company={user_company}")
-            chatterfy_ftm_result = await send_chatterfy_ftm_postback(
+
+        postback_results = await send_postbacks_parallel(
+            chatterfy=send_chatterfy_ftm_postback(
                 clickid=user_clickid,
                 company=user_company,
                 user_id=id
-            )
-        else:
-            print(
-                f"[POSTBACK FTM] ⚠️ clickid_chatterfry не найден для user {id}, постбэк в Chatterfy не отправлен")
+            ) if user_clickid else None,
+            keitaro=send_keitaro_postback(
+                subid=subid, status="ftm", tid=4, user_id=id
+            ) if subid else None,
+        )
+
+        chatterfy_ftm_result = postback_results.get('chatterfy')
+        keitaro_result = postback_results.get('keitaro')
 
         # ========================================
-        # Отправка постбэка в Keitaro
+        # Формируем ответ (формат идентичен v2.1)
         # ========================================
-        if not subid:
-            print(
-                f"[POSTBACK FTM] ⚠️ sub_id не найден для user {id}, постбэк в Keitaro не отправлен")
-            return {
-                "status": "ok",
-                "user_id": id,
-                "action": "ftm",
-                "user_created": user_created,
-                "trader_id_updated": trader_id_updated,
-                "transaction_id": result.get("transaction_id"),
-                "keitaro_postback": "skipped - no subid",
-                "chatterfy_ftm_postback": {
-                    "sent": chatterfy_ftm_result.get("ok") if chatterfy_ftm_result else False,
-                    "clickid": user_clickid,
-                    "source": chatterfy_ftm_result.get("source") if chatterfy_ftm_result else None,
-                    "company": chatterfy_ftm_result.get("company") if chatterfy_ftm_result else None,
-                    "url": chatterfy_ftm_result.get("full_url") if chatterfy_ftm_result else None
-                } if user_clickid else "skipped - no clickid"
-            }
-
-        print(
-            f"[POSTBACK FTM] Отправляем постбэк в Keitaro для subid: {subid}, tid=4")
-        keitaro_result = await send_keitaro_postback(subid=subid, status="ftm", tid=4, user_id=id)
-
         return {
             "status": "ok",
             "user_id": id,
@@ -382,7 +421,7 @@ async def ftm_postback(
                 "tid": 4,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
-            },
+            } if subid else "skipped - no subid",
             "chatterfy_ftm_postback": {
                 "sent": chatterfy_ftm_result.get("ok") if chatterfy_ftm_result else False,
                 "clickid": user_clickid,
@@ -421,6 +460,8 @@ async def reg_postback(
     """
     Регистрация пользователя.
     trader_id обновляется ВСЕГДА когда передан (юзер мог зарегать новый аккаунт).
+    
+    REG отправляет только Keitaro постбэк (один HTTP вызов), параллелизация не нужна.
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -571,6 +612,8 @@ async def dep_postback(
     Отправляет событие SALE в Keitaro и постбэк в Chatterfy с суммой депозитов (event: sumdep)
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    
+    v2.2: Chatterfy DEP + Keitaro SALE отправляются параллельно
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -685,59 +728,46 @@ async def dep_postback(
         print(
             f"[POSTBACK DEP] Общая сумма депозитов после записи: {total_deposits_sum}")
 
-        # Отправляем постбэк в Chatterfy (если есть clickid) - is_redep=False для DEP
-        chatterfy_result = None
+        # ========================================
+        # Параллельная отправка постбэков (v2.2)
+        # ========================================
         if user_clickid:
             print(
                 f"[POSTBACK DEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=sumdep")
-            chatterfy_result = await send_chatterfy_postback(
+        else:
+            print(
+                f"[POSTBACK DEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
+
+        if subid:
+            print(
+                f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+        else:
+            print(
+                f"[POSTBACK DEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
+
+        postback_results = await send_postbacks_parallel(
+            chatterfy=send_chatterfy_postback(
                 clickid=user_clickid,
                 sumdep=total_deposits_sum,
                 previous_dep=sum_value,
                 is_redep=False,  # DEP использует event "sumdep"
                 user_id=actual_user_id
-            )
-        else:
-            print(
-                f"[POSTBACK DEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
-
-        if not subid:
-            print(
-                f"[POSTBACK DEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
-            return {
-                "status": "ok",
-                "user_id": actual_user_id,
-                "action": "dep",
-                "sum": sum_value,
-                "commission": commission_value,
-                "tid": tid_value,
-                "user_created": user_created,
-                "trader_id_updated": trader_id_update_info.get("updated", False),
-                "old_trader_id": trader_id_update_info.get("old_trader_id"),
-                "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
-                "transaction_id": result.get("transaction_id"),
-                "total_deposits_sum": total_deposits_sum,
-                "keitaro_postback": "skipped - no subid",
-                "chatterfy_postback": {
-                    "sent": chatterfy_result.get("ok") if chatterfy_result else False,
-                    "clickid": user_clickid,
-                    "event": "sumdep",
-                    "sumdep": total_deposits_sum,
-                    "previous_dep": sum_value,
-                    "url": chatterfy_result.get("full_url") if chatterfy_result else None
-                } if user_clickid else "skipped - no clickid"
-            }
-
-        print(
-            f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
-        keitaro_result = await send_keitaro_postback(
-            subid=subid,
-            status="sale",
-            payout=sum_value,
-            tid=tid_value,
-            user_id=actual_user_id
+            ) if user_clickid else None,
+            keitaro=send_keitaro_postback(
+                subid=subid,
+                status="sale",
+                payout=sum_value,
+                tid=tid_value,
+                user_id=actual_user_id
+            ) if subid else None,
         )
 
+        chatterfy_result = postback_results.get('chatterfy')
+        keitaro_result = postback_results.get('keitaro')
+
+        # ========================================
+        # Формируем ответ (формат идентичен v2.1)
+        # ========================================
         return {
             "status": "ok",
             "user_id": actual_user_id,
@@ -759,7 +789,7 @@ async def dep_postback(
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
-            },
+            } if subid else "skipped - no subid",
             "chatterfy_postback": {
                 "sent": chatterfy_result.get("ok") if chatterfy_result else False,
                 "clickid": user_clickid,
@@ -804,6 +834,8 @@ async def redep_postback(
     Отправляет событие DEP в Keitaro и постбэк в Chatterfy с суммой депозитов (event: pb_redep)
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    
+    v2.2: Chatterfy REDEP + Keitaro DEP отправляются параллельно
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -918,59 +950,46 @@ async def redep_postback(
         print(
             f"[POSTBACK REDEP] Общая сумма депозитов после записи: {total_deposits_sum}")
 
-        # Отправляем постбэк в Chatterfy (если есть clickid) - is_redep=True для REDEP
-        chatterfy_result = None
+        # ========================================
+        # Параллельная отправка постбэков (v2.2)
+        # ========================================
         if user_clickid:
             print(
                 f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=pb_redep")
-            chatterfy_result = await send_chatterfy_postback(
+        else:
+            print(
+                f"[POSTBACK REDEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
+
+        if subid:
+            print(
+                f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
+        else:
+            print(
+                f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
+
+        postback_results = await send_postbacks_parallel(
+            chatterfy=send_chatterfy_postback(
                 clickid=user_clickid,
                 sumdep=total_deposits_sum,
                 previous_dep=sum_value,
                 is_redep=True,  # REDEP использует event "pb_redep"
                 user_id=actual_user_id
-            )
-        else:
-            print(
-                f"[POSTBACK REDEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
-
-        if not subid:
-            print(
-                f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
-            return {
-                "status": "ok",
-                "user_id": actual_user_id,
-                "action": "redep",
-                "sum": sum_value,
-                "commission": commission_value,
-                "tid": tid_value,
-                "user_created": user_created,
-                "trader_id_updated": trader_id_update_info.get("updated", False),
-                "old_trader_id": trader_id_update_info.get("old_trader_id"),
-                "new_trader_id": trader_id if trader_id_update_info.get("updated") else None,
-                "transaction_id": result.get("transaction_id"),
-                "total_deposits_sum": total_deposits_sum,
-                "keitaro_postback": "skipped - no subid",
-                "chatterfy_postback": {
-                    "sent": chatterfy_result.get("ok") if chatterfy_result else False,
-                    "clickid": user_clickid,
-                    "event": "pb_redep",
-                    "sumdep": total_deposits_sum,
-                    "previous_dep": sum_value,
-                    "url": chatterfy_result.get("full_url") if chatterfy_result else None
-                } if user_clickid else "skipped - no clickid"
-            }
-
-        print(
-            f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
-        keitaro_result = await send_keitaro_postback(
-            subid=subid,
-            status="dep",
-            payout=sum_value,
-            tid=tid_value,
-            user_id=actual_user_id
+            ) if user_clickid else None,
+            keitaro=send_keitaro_postback(
+                subid=subid,
+                status="dep",
+                payout=sum_value,
+                tid=tid_value,
+                user_id=actual_user_id
+            ) if subid else None,
         )
 
+        chatterfy_result = postback_results.get('chatterfy')
+        keitaro_result = postback_results.get('keitaro')
+
+        # ========================================
+        # Формируем ответ (формат идентичен v2.1)
+        # ========================================
         return {
             "status": "ok",
             "user_id": actual_user_id,
@@ -992,7 +1011,7 @@ async def redep_postback(
                 "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
-            },
+            } if subid else "skipped - no subid",
             "chatterfy_postback": {
                 "sent": chatterfy_result.get("ok") if chatterfy_result else False,
                 "clickid": user_clickid,
@@ -1039,6 +1058,8 @@ async def withdraw_postback(
     https://api.chatterfy.ai/api/postbacks/.../tracker-postback?tracker.event=withdraw&clickid={clickid}&fields.withdraw={sum}
 
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
+    
+    WITHDRAW отправляет только Chatterfy постбэк (один HTTP вызов), параллелизация не нужна.
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
@@ -1374,6 +1395,8 @@ async def revenue_postback(
     3. subscriber_id, clickid
     
     Если id и trader_id указывают на РАЗНЫХ юзеров - используем того, кого нашли по trader_id.
+    
+    REVENUE отправляет только Keitaro постбэк (один HTTP вызов), параллелизация не нужна.
     """
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")

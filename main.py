@@ -9,6 +9,7 @@ from miniapp_router import router as miniapp_router  # NEW
 from keytaro import startup_event, shutdown_event, campaign_router
 from db import DataBase
 from logger_bot import close_bot, send_success_log
+from api_request import close_http_session  # v2.2: cleanup shared HTTP session
 from config import ENABLE_TELEGRAM_LOGS
 
 # Глобальный экземпляр БД для graceful shutdown
@@ -43,8 +44,8 @@ async def lifespan(app: FastAPI):
                 log_type="SERVICE_STARTED",
                 message="✅ Сервис Keitaro Postback успешно запущен",
                 additional_info={
-                    "version": "2.1.0",
-                    "features": "Postbacks + Telegram Logger + MiniApp Tracker"
+                    "version": "2.2.0",
+                    "features": "Postbacks + Telegram Logger + MiniApp Tracker + Parallel Sends"
                 }
             )
         except Exception as e:
@@ -72,6 +73,9 @@ async def lifespan(app: FastAPI):
 
     await shutdown_event()
 
+    # Закрываем shared HTTP сессию (v2.2)
+    await close_http_session()
+
     # Закрываем все соединения с БД
     if db_instance:
         db_instance.close_all_connections()
@@ -85,7 +89,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp",
     description="Сервис для резолва диплинков, интеграции с Keitaro, автоматической отправки логов ошибок в Telegram и трекинга Mini App",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan
 )
 
@@ -108,7 +112,7 @@ app.include_router(miniapp_router, prefix="/api", tags=["miniapp"])  # NEW
 @app.get("/", tags=["main"])
 async def root():
     return {
-        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp v2.1",
+        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp v2.2",
         "features": [
             "Резолв UUID из диплинков",
             "Постбэки от Keitaro",
@@ -116,7 +120,10 @@ async def root():
             "Фоновая обработка данных",
             "Connection pooling для надежности",
             "Telegram Logger для ошибок",
-            "🆕 Трекинг открытий Mini App калькулятора"
+            "Трекинг открытий Mini App калькулятора",
+            "🆕 Параллельная отправка постбэков (v2.2)",
+            "🆕 Shared HTTP session (v2.2)",
+            "🆕 4 воркера uvicorn (v2.2)"
         ],
         "endpoints": {
             "miniapp_track": "POST /api/get_miniapp",
