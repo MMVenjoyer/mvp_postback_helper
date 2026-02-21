@@ -5,11 +5,12 @@ import asyncio
 
 from postback_router import router as postback_router
 from resolver_router import router as resolver_router
-from miniapp_router import router as miniapp_router  # NEW
+from miniapp_router import router as miniapp_router
+from report_router import router as report_router          # NEW: отчёты воронки
 from keytaro import startup_event, shutdown_event, campaign_router
 from db import DataBase
 from logger_bot import close_bot, send_success_log
-from api_request import close_http_session  # v2.2: cleanup shared HTTP session
+from api_request import close_http_session
 from config import ENABLE_TELEGRAM_LOGS
 
 # Глобальный экземпляр БД для graceful shutdown
@@ -44,8 +45,8 @@ async def lifespan(app: FastAPI):
                 log_type="SERVICE_STARTED",
                 message="✅ Сервис Keitaro Postback успешно запущен",
                 additional_info={
-                    "version": "2.2.0",
-                    "features": "Postbacks + Telegram Logger + MiniApp Tracker + Parallel Sends"
+                    "version": "2.3.0",
+                    "features": "Postbacks + Telegram Logger + MiniApp Tracker + Parallel Sends + Funnel Reports"
                 }
             )
         except Exception as e:
@@ -87,9 +88,9 @@ async def lifespan(app: FastAPI):
 
 # Создаем FastAPI приложение с lifespan
 app = FastAPI(
-    title="Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp",
-    description="Сервис для резолва диплинков, интеграции с Keitaro, автоматической отправки логов ошибок в Telegram и трекинга Mini App",
-    version="2.2.0",
+    title="Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp + Reports",
+    description="Сервис для резолва диплинков, интеграции с Keitaro, автоматической отправки логов ошибок в Telegram, трекинга Mini App и отчётов воронки",
+    version="2.3.0",
     lifespan=lifespan
 )
 
@@ -106,13 +107,14 @@ app.add_middleware(
 app.include_router(postback_router, prefix="/postback", tags=["postbacks"])
 app.include_router(resolver_router, prefix="/resolve", tags=["resolver"])
 app.include_router(campaign_router, prefix="/api", tags=["campaigns"])
-app.include_router(miniapp_router, prefix="/api", tags=["miniapp"])  # NEW
+app.include_router(miniapp_router, prefix="/api", tags=["miniapp"])
+app.include_router(report_router, prefix="/api/report", tags=["reports"])  # NEW
 
 
 @app.get("/", tags=["main"])
 async def root():
     return {
-        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp v2.2",
+        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp + Reports v2.3",
         "features": [
             "Резолв UUID из диплинков",
             "Постбэки от Keitaro",
@@ -121,13 +123,16 @@ async def root():
             "Connection pooling для надежности",
             "Telegram Logger для ошибок",
             "Трекинг открытий Mini App калькулятора",
-            "🆕 Параллельная отправка постбэков (v2.2)",
-            "🆕 Shared HTTP session (v2.2)",
-            "🆕 4 воркера uvicorn (v2.2)"
+            "Параллельная отправка постбэков (v2.2)",
+            "Shared HTTP session (v2.2)",
+            "4 воркера uvicorn (v2.2)",
+            "🆕 Отчёты воронки: когортный + некогортный (v2.3)"
         ],
         "endpoints": {
             "miniapp_track": "POST /api/get_miniapp",
-            "miniapp_stats": "GET /api/calc_stats"
+            "miniapp_stats": "GET /api/calc_stats",
+            "funnel_report": "GET /api/report/funnel?type=cohort&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD",
+            "funnel_summary": "GET /api/report/funnel/summary?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD"
         }
     }
 
