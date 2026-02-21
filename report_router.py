@@ -241,6 +241,47 @@ async def get_funnel_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/trader_ids")
+async def get_all_trader_ids():
+    """
+    Возвращает список всех trader_id из базы (не NULL, не пустые).
+
+    GET /api/report/trader_ids
+
+    Ответ:
+    {
+      "status": "ok",
+      "count": 123,
+      "trader_ids": ["TRD_001", "TRD_002", ...]
+    }
+    """
+    try:
+        import psycopg2.extras
+
+        with db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT trader_id
+                    FROM users
+                    WHERE trader_id IS NOT NULL
+                      AND trader_id != ''
+                    ORDER BY trader_id
+                """)
+                rows = cur.fetchall()
+
+        trader_ids = [r[0] for r in rows]
+
+        return {
+            "status": "ok",
+            "count": len(trader_ids),
+            "trader_ids": trader_ids,
+        }
+
+    except Exception as e:
+        print(f"[REPORT] ✗ Exception in trader_ids: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/funnel/summary")
 async def get_funnel_summary(
     start_date: date = Query(..., description="Начало диапазона (YYYY-MM-DD)"),
