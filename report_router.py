@@ -12,6 +12,10 @@ Report Router — воронка продаж: когортный и неког�
 Когортный: группировка по дню joined_bot_time, конверсии внутри когорты
 Некогортный: события по дню их фактического наступления
 
+v2.4: Добавлены поля dep/redep/dep_sum/redep_sum/total_deposits/revenue
+      dep и redep считаются отдельно из transactions
+      revenue берётся как последнее значение на юзера (DISTINCT ON)
+
 Таймзона: Europe/Berlin (UTC+1)
 """
 
@@ -89,72 +93,166 @@ def _serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
 # SQL ЗАПРОСЫ
 # ==========================================
 
+# ---------- КОГОРТНЫЙ ----------
+# Группируем по дню joined_bot_time.
+# dep/redep берём из transactions (кол-во и суммы).
+# revenue — последнее значение на юзера из transactions.
 COHORT_SQL = """
 WITH base AS (
     SELECT
         id,
         date_trunc('day', joined_bot_time AT TIME ZONE %(tz)s) AS cohort_day,
-        joined_bot_time AT TIME ZONE %(tz)s AS joined_bot_time,
-        joined_main_time AT TIME ZONE %(tz)s AS joined_main_time,
-        ftm_time AT TIME ZONE %(tz)s AS ftm_time,
-        reg_time AT TIME ZONE %(tz)s AS reg_time,
-        dep_time AT TIME ZONE %(tz)s AS dep_time
+        joined_main_time,
+        ftm_time,
+        reg_time,
+        dep_time,
+        redep_time
     FROM users
     WHERE joined_bot_time IS NOT NULL
-      AND joined_bot_time AT TIME ZONE %(tz)s >= %(start)s::timestamp
-      AND joined_bot_time AT TIME ZONE %(tz)s < %(end)s::timestamp + INTERVAL '1 day'
+      AND (joined_bot_time AT TIME ZONE %(tz)s)::date >= %(start)s::date
+      AND (joined_bot_time AT TIME ZONE %(tz)s)::date <= %(end)s::date
 ),
-flags AS (
+user_tx AS (
     SELECT
-        cohort_day,
-        COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE joined_main_time IS NOT NULL) AS main,
-        COUNT(*) FILTER (WHERE ftm_time IS NOT NULL) AS ftm,
-        COUNT(*) FILTER (WHERE reg_time IS NOT NULL) AS reg,
-        COUNT(*) FILTER (WHERE dep_time IS NOT NULL) AS dep
-    FROM base
-    GROUP BY cohort_day
+        t.user_id,
+        COALESCE(SUM(t.sum) FILTER (WHERE t.action = 'dep'),  0) AS dep_sum,
+        COALESCE(SUM(t.sum) FILTER (WHERE t.action = 'redep'), 0) AS redep_sum,
+        COALESCE(SUM(t.sum) FILTER (WHERE t.action IN ('dep','redep')), 0) AS total_deposits
+    FROM transactions t
+    WHERE t.user_id IN (SELECT id FROM base)
+      AND t.action IN ('dep', 'redep')
+    GROUP BY t.user_id
+),
+user_revenue AS (
+    SELECT DISTINCT ON (t.user_id)
+        t.user_id,
+        t.sum AS revenue
+    FROM transactions t
+    WHERE t.user_id IN (SELECT id FROM base)
+      AND t.action = 'revenue'
+    ORDER BY t.user_id, t.created_at DESC
+),
+combined AS (
+    SELECT
+        b.cohort_day,
+        b.id,
+        b.joined_main_time,
+        b.ftm_time,
+        b.reg_time,
+        b.dep_time,
+        b.redep_time,
+        COALESCE(tx.dep_sum, 0)        AS dep_sum,
+        COALESCE(tx.redep_sum, 0)      AS redep_sum,
+        COALESCE(tx.total_deposits, 0) AS total_deposits,
+        COALESCE(rv.revenue, 0)        AS revenue
+    FROM base b
+    LEFT JOIN user_tx      tx ON tx.user_id = b.id
+    LEFT JOIN user_revenue rv ON rv.user_id = b.id
 )
 SELECT
-    cohort_day::date AS day,
-    total,
-    main,
-    ROUND(main::decimal / NULLIF(total, 0) * 100, 2) AS conv_bot_to_main,
-    ftm,
-    ROUND(ftm::decimal / NULLIF(main, 0) * 100, 2) AS conv_main_to_ftm,
-    reg,
-    ROUND(reg::decimal / NULLIF(ftm, 0) * 100, 2) AS conv_ftm_to_reg,
-    dep,
-    ROUND(dep::decimal / NULLIF(reg, 0) * 100, 2) AS conv_reg_to_dep,
-    ROUND(dep::decimal / NULLIF(total, 0) * 100, 2) AS full_funnel
-FROM flags
+    cohort_day::date                                      AS day,
+    COUNT(*)                                              AS total,
+    COUNT(*) FILTER (WHERE joined_main_time IS NOT NULL)  AS main,
+    ROUND(COUNT(*) FILTER (WHERE joined_main_time IS NOT NULL)::decimal
+        / NULLIF(COUNT(*), 0) * 100, 2)                  AS conv_bot_to_main,
+
+    COUNT(*) FILTER (WHERE ftm_time IS NOT NULL)          AS ftm,
+    ROUND(COUNT(*) FILTER (WHERE ftm_time IS NOT NULL)::decimal
+        / NULLIF(COUNT(*) FILTER (WHERE joined_main_time IS NOT NULL), 0) * 100, 2) AS conv_main_to_ftm,
+
+    COUNT(*) FILTER (WHERE reg_time IS NOT NULL)          AS reg,
+    ROUND(COUNT(*) FILTER (WHERE reg_time IS NOT NULL)::decimal
+        / NULLIF(COUNT(*) FILTER (WHERE ftm_time IS NOT NULL), 0) * 100, 2) AS conv_ftm_to_reg,
+
+    COUNT(*) FILTER (WHERE dep_time IS NOT NULL)          AS dep,
+    ROUND(COUNT(*) FILTER (WHERE dep_time IS NOT NULL)::decimal
+        / NULLIF(COUNT(*) FILTER (WHERE reg_time IS NOT NULL), 0) * 100, 2) AS conv_reg_to_dep,
+
+    COUNT(*) FILTER (WHERE redep_time IS NOT NULL)        AS redep,
+
+    SUM(dep_sum)::numeric                                 AS dep_sum,
+    SUM(redep_sum)::numeric                               AS redep_sum,
+    SUM(total_deposits)::numeric                          AS total_deposits,
+    SUM(revenue)::numeric                                 AS revenue,
+
+    ROUND(COUNT(*) FILTER (WHERE dep_time IS NOT NULL)::decimal
+        / NULLIF(COUNT(*), 0) * 100, 2)                  AS full_funnel
+FROM combined
+GROUP BY cohort_day
 ORDER BY cohort_day
 """
 
+# ---------- НЕКОГОРТНЫЙ ----------
+# События считаются по дню их фактического наступления.
+# reg/dep/redep берутся из transactions (по created_at).
+# revenue — последнее на юзера (DISTINCT ON), привязано к дню транзакции.
 NON_COHORT_SQL = """
 WITH events AS (
-    SELECT (joined_bot_time AT TIME ZONE %(tz)s)::date AS day, 'new_users' AS evt
-    FROM users WHERE joined_bot_time IS NOT NULL
+    -- joined_bot
+    SELECT (u.joined_bot_time AT TIME ZONE %(tz)s)::date AS day,
+           'new_users' AS evt, 0::numeric AS amount
+    FROM users u
+    WHERE u.joined_bot_time IS NOT NULL
+
     UNION ALL
-    SELECT (joined_main_time AT TIME ZONE %(tz)s)::date, 'joined_main'
-    FROM users WHERE joined_main_time IS NOT NULL
+    -- joined_main
+    SELECT (u.joined_main_time AT TIME ZONE %(tz)s)::date,
+           'joined_main', 0
+    FROM users u
+    WHERE u.joined_main_time IS NOT NULL
+
     UNION ALL
-    SELECT (ftm_time AT TIME ZONE %(tz)s)::date, 'ftm'
-    FROM users WHERE ftm_time IS NOT NULL
+    -- ftm
+    SELECT (u.ftm_time AT TIME ZONE %(tz)s)::date,
+           'ftm', 0
+    FROM users u
+    WHERE u.ftm_time IS NOT NULL
+
     UNION ALL
-    SELECT (reg_time AT TIME ZONE %(tz)s)::date, 'reg'
-    FROM users WHERE reg_time IS NOT NULL
+    -- reg (из transactions)
+    SELECT (t.created_at AT TIME ZONE %(tz)s)::date,
+           'reg', 0
+    FROM transactions t
+    WHERE t.action = 'reg'
+
     UNION ALL
-    SELECT (dep_time AT TIME ZONE %(tz)s)::date, 'dep'
-    FROM users WHERE dep_time IS NOT NULL
+    -- dep (из transactions)
+    SELECT (t.created_at AT TIME ZONE %(tz)s)::date,
+           'dep', COALESCE(t.sum, 0)
+    FROM transactions t
+    WHERE t.action = 'dep'
+
+    UNION ALL
+    -- redep (из transactions)
+    SELECT (t.created_at AT TIME ZONE %(tz)s)::date,
+           'redep', COALESCE(t.sum, 0)
+    FROM transactions t
+    WHERE t.action = 'redep'
+
+    UNION ALL
+    -- revenue (последнее значение на юзера)
+    SELECT (t.created_at AT TIME ZONE %(tz)s)::date,
+           'revenue', COALESCE(t.sum, 0)
+    FROM (
+        SELECT DISTINCT ON (user_id) user_id, created_at, sum
+        FROM transactions
+        WHERE action = 'revenue'
+        ORDER BY user_id, created_at DESC
+    ) t
 )
 SELECT
     day,
-    COUNT(*) FILTER (WHERE evt = 'new_users') AS new_users,
-    COUNT(*) FILTER (WHERE evt = 'joined_main') AS joined_main,
-    COUNT(*) FILTER (WHERE evt = 'ftm') AS ftm,
-    COUNT(*) FILTER (WHERE evt = 'reg') AS reg,
-    COUNT(*) FILTER (WHERE evt = 'dep') AS dep
+    COUNT(*) FILTER (WHERE evt = 'new_users')   AS new_users,
+    COUNT(*) FILTER (WHERE evt = 'joined_main')  AS joined_main,
+    COUNT(*) FILTER (WHERE evt = 'ftm')          AS ftm,
+    COUNT(*) FILTER (WHERE evt = 'reg')          AS reg,
+    COUNT(*) FILTER (WHERE evt = 'dep')          AS dep,
+    COUNT(*) FILTER (WHERE evt = 'redep')        AS redep,
+    COALESCE(SUM(amount) FILTER (WHERE evt = 'dep'),   0) AS dep_sum,
+    COALESCE(SUM(amount) FILTER (WHERE evt = 'redep'), 0) AS redep_sum,
+    COALESCE(SUM(amount) FILTER (WHERE evt = 'dep'),   0)
+      + COALESCE(SUM(amount) FILTER (WHERE evt = 'redep'), 0) AS total_deposits,
+    COALESCE(SUM(amount) FILTER (WHERE evt = 'revenue'), 0) AS revenue
 FROM events
 WHERE day BETWEEN %(start)s AND %(end)s
 GROUP BY day
@@ -167,33 +265,65 @@ ORDER BY day
 # ==========================================
 
 def _compute_totals_cohort(rows: List[Dict]) -> Dict[str, Any]:
-    t = {"day": "total", "total": 0, "main": 0, "ftm": 0, "reg": 0, "dep": 0}
+    t = {
+        "day": "total",
+        "total": 0, "main": 0, "ftm": 0, "reg": 0, "dep": 0, "redep": 0,
+        "dep_sum": 0.0, "redep_sum": 0.0, "total_deposits": 0.0, "revenue": 0.0,
+    }
     for r in rows:
-        t["total"] += r.get("total", 0) or 0
-        t["main"] += r.get("main", 0) or 0
-        t["ftm"] += r.get("ftm", 0) or 0
-        t["reg"] += r.get("reg", 0) or 0
-        t["dep"] += r.get("dep", 0) or 0
+        t["total"]          += r.get("total", 0) or 0
+        t["main"]           += r.get("main", 0) or 0
+        t["ftm"]            += r.get("ftm", 0) or 0
+        t["reg"]            += r.get("reg", 0) or 0
+        t["dep"]            += r.get("dep", 0) or 0
+        t["redep"]          += r.get("redep", 0) or 0
+        t["dep_sum"]        += float(r.get("dep_sum", 0) or 0)
+        t["redep_sum"]      += float(r.get("redep_sum", 0) or 0)
+        t["total_deposits"] += float(r.get("total_deposits", 0) or 0)
+        t["revenue"]        += float(r.get("revenue", 0) or 0)
 
     def pct(a, b):
         return round(a / b * 100, 2) if b else None
 
     t["conv_bot_to_main"] = pct(t["main"], t["total"])
     t["conv_main_to_ftm"] = pct(t["ftm"], t["main"])
-    t["conv_ftm_to_reg"] = pct(t["reg"], t["ftm"])
-    t["conv_reg_to_dep"] = pct(t["dep"], t["reg"])
-    t["full_funnel"] = pct(t["dep"], t["total"])
+    t["conv_ftm_to_reg"]  = pct(t["reg"], t["ftm"])
+    t["conv_reg_to_dep"]  = pct(t["dep"], t["reg"])
+    t["full_funnel"]      = pct(t["dep"], t["total"])
+
+    # Округляем суммы
+    t["dep_sum"]        = round(t["dep_sum"], 2)
+    t["redep_sum"]      = round(t["redep_sum"], 2)
+    t["total_deposits"] = round(t["total_deposits"], 2)
+    t["revenue"]        = round(t["revenue"], 2)
+
     return t
 
 
 def _compute_totals_non_cohort(rows: List[Dict]) -> Dict[str, Any]:
-    t = {"day": "total", "new_users": 0, "joined_main": 0, "ftm": 0, "reg": 0, "dep": 0}
+    t = {
+        "day": "total",
+        "new_users": 0, "joined_main": 0, "ftm": 0, "reg": 0,
+        "dep": 0, "redep": 0,
+        "dep_sum": 0.0, "redep_sum": 0.0, "total_deposits": 0.0, "revenue": 0.0,
+    }
     for r in rows:
-        t["new_users"] += r.get("new_users", 0) or 0
-        t["joined_main"] += r.get("joined_main", 0) or 0
-        t["ftm"] += r.get("ftm", 0) or 0
-        t["reg"] += r.get("reg", 0) or 0
-        t["dep"] += r.get("dep", 0) or 0
+        t["new_users"]      += r.get("new_users", 0) or 0
+        t["joined_main"]    += r.get("joined_main", 0) or 0
+        t["ftm"]            += r.get("ftm", 0) or 0
+        t["reg"]            += r.get("reg", 0) or 0
+        t["dep"]            += r.get("dep", 0) or 0
+        t["redep"]          += r.get("redep", 0) or 0
+        t["dep_sum"]        += float(r.get("dep_sum", 0) or 0)
+        t["redep_sum"]      += float(r.get("redep_sum", 0) or 0)
+        t["total_deposits"] += float(r.get("total_deposits", 0) or 0)
+        t["revenue"]        += float(r.get("revenue", 0) or 0)
+
+    t["dep_sum"]        = round(t["dep_sum"], 2)
+    t["redep_sum"]      = round(t["redep_sum"], 2)
+    t["total_deposits"] = round(t["total_deposits"], 2)
+    t["revenue"]        = round(t["revenue"], 2)
+
     return t
 
 
@@ -210,6 +340,16 @@ async def get_funnel_report(
 ):
     """
     Воронка продаж — когортный или некогортный анализ по дням.
+
+    Поля ответа (cohort):
+      day, total, main, conv_bot_to_main, ftm, conv_main_to_ftm,
+      reg, conv_ftm_to_reg, dep, conv_reg_to_dep, redep,
+      dep_sum, redep_sum, total_deposits, revenue, full_funnel
+
+    Поля ответа (non_cohort):
+      day, new_users, joined_main, ftm, reg, dep, redep,
+      dep_sum, redep_sum, total_deposits, revenue
+
     Требуется заголовок: X-API-Key
     """
     verify_api_key(x_api_key)
