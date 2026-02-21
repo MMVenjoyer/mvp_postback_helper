@@ -45,6 +45,11 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8000))
 
 # ===========================================
+# REPORT API KEY (защита эндпоинтов отчётов)
+# ===========================================
+REPORT_API_KEY = os.getenv("REPORT_API_KEY", "")
+
+# ===========================================
 # TELEGRAM BOT SETTINGS (для логов ошибок)
 # ===========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
@@ -75,6 +80,8 @@ print(
 print("-" * 50)
 print(f"API Host: {API_HOST}")
 print(f"API Port: {API_PORT}")
+print("-" * 50)
+print(f"Report API Key: {'✓ Настроен' if REPORT_API_KEY else '⚠️ НЕ НАСТРОЕН'}")
 print("-" * 50)
 print(f"Telegram Bot Enabled: {ENABLE_TELEGRAM_LOGS}")
 if ENABLE_TELEGRAM_LOGS:

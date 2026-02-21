@@ -1,9 +1,13 @@
 """
 Report Router — воронка продаж: когортный и некогортный анализ
 
+Все эндпоинты защищены заголовком X-API-Key.
+
 Эндпоинты:
 - GET /api/report/funnel?type=cohort&start_date=2026-02-10&end_date=2026-02-22
 - GET /api/report/funnel?type=non_cohort&start_date=2026-02-10&end_date=2026-02-22
+- GET /api/report/funnel/summary?start_date=2026-02-10&end_date=2026-02-22
+- GET /api/report/trader_ids
 
 Когортный: группировка по дню joined_bot_time, конверсии внутри когорты
 Некогортный: события по дню их фактического наступления
@@ -11,12 +15,13 @@ Report Router — воронка продаж: когортный и неког�
 Таймзона: Europe/Berlin (UTC+1)
 """
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Header
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 from enum import Enum
 
 from db import DataBase
+from config import REPORT_API_KEY
 
 router = APIRouter()
 db = DataBase()
@@ -29,7 +34,30 @@ class ReportType(str, Enum):
     non_cohort = "non_cohort"
 
 
-def _run_query(query: str, params: tuple) -> List[Dict[str, Any]]:
+# ==========================================
+# АВТОРИЗАЦИЯ
+# ==========================================
+
+def verify_api_key(x_api_key: str):
+    """
+    Проверяет API ключ из заголовка X-API-Key.
+    Если REPORT_API_KEY не задан в .env — все запросы блокируются.
+    """
+    if not REPORT_API_KEY:
+        raise HTTPException(status_code=500, detail="REPORT_API_KEY not configured on server")
+
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+
+    if x_api_key != REPORT_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+# ==========================================
+# УТИЛИТЫ
+# ==========================================
+
+def _run_query(query: str, params: dict) -> List[Dict[str, Any]]:
     """Выполняет SQL запрос и возвращает список словарей"""
     import psycopg2.extras
 
@@ -58,7 +86,7 @@ def _serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ==========================================
-# КОГОРТНЫЙ ОТЧЁТ
+# SQL ЗАПРОСЫ
 # ==========================================
 
 COHORT_SQL = """
@@ -103,11 +131,6 @@ FROM flags
 ORDER BY cohort_day
 """
 
-
-# ==========================================
-# НЕКОГОРТНЫЙ ОТЧЁТ
-# ==========================================
-
 NON_COHORT_SQL = """
 WITH events AS (
     SELECT (joined_bot_time AT TIME ZONE %(tz)s)::date AS day, 'new_users' AS evt
@@ -140,11 +163,10 @@ ORDER BY day
 
 
 # ==========================================
-# СУММАРНАЯ СТРОКА (totals)
+# TOTALS
 # ==========================================
 
 def _compute_totals_cohort(rows: List[Dict]) -> Dict[str, Any]:
-    """Агрегирует totals по всем дням когортного отчёта"""
     t = {"day": "total", "total": 0, "main": 0, "ftm": 0, "reg": 0, "dep": 0}
     for r in rows:
         t["total"] += r.get("total", 0) or 0
@@ -165,7 +187,6 @@ def _compute_totals_cohort(rows: List[Dict]) -> Dict[str, Any]:
 
 
 def _compute_totals_non_cohort(rows: List[Dict]) -> Dict[str, Any]:
-    """Агрегирует totals по всем дням некогортного отчёта"""
     t = {"day": "total", "new_users": 0, "joined_main": 0, "ftm": 0, "reg": 0, "dep": 0}
     for r in rows:
         t["new_users"] += r.get("new_users", 0) or 0
@@ -177,41 +198,26 @@ def _compute_totals_non_cohort(rows: List[Dict]) -> Dict[str, Any]:
 
 
 # ==========================================
-# ЭНДПОИНТ
+# ЭНДПОИНТЫ
 # ==========================================
 
 @router.get("/funnel")
 async def get_funnel_report(
     type: ReportType = Query(..., description="Тип отчёта: cohort или non_cohort"),
     start_date: date = Query(..., description="Начало диапазона (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="Конец диапазона (YYYY-MM-DD)")
+    end_date: date = Query(..., description="Конец диапазона (YYYY-MM-DD)"),
+    x_api_key: str = Header(None, alias="X-API-Key")
 ):
     """
     Воронка продаж — когортный или некогортный анализ по дням.
-
-    Примеры:
-      GET /api/report/funnel?type=cohort&start_date=2026-02-10&end_date=2026-02-22
-      GET /api/report/funnel?type=non_cohort&start_date=2026-02-10&end_date=2026-02-22
-
-    Ответ:
-    {
-      "status": "ok",
-      "report_type": "cohort",
-      "start_date": "2026-02-10",
-      "end_date": "2026-02-22",
-      "days": 13,
-      "rows": [ ... ],
-      "totals": { ... }
-    }
+    Требуется заголовок: X-API-Key
     """
+    verify_api_key(x_api_key)
+
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="start_date must be <= end_date")
 
-    params = {
-        "tz": TZ,
-        "start": str(start_date),
-        "end": str(end_date),
-    }
+    params = {"tz": TZ, "start": str(start_date), "end": str(end_date)}
 
     try:
         if type == ReportType.cohort:
@@ -234,6 +240,8 @@ async def get_funnel_report(
             "totals": totals,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[REPORT] ✗ Exception: {e}")
         import traceback
@@ -242,22 +250,16 @@ async def get_funnel_report(
 
 
 @router.get("/trader_ids")
-async def get_all_trader_ids():
+async def get_all_trader_ids(
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
     """
-    Возвращает список всех trader_id из базы (не NULL, не пустые).
-
-    GET /api/report/trader_ids
-
-    Ответ:
-    {
-      "status": "ok",
-      "count": 123,
-      "trader_ids": ["TRD_001", "TRD_002", ...]
-    }
+    Список всех trader_id из базы.
+    Требуется заголовок: X-API-Key
     """
+    verify_api_key(x_api_key)
+
     try:
-        import psycopg2.extras
-
         with db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -277,6 +279,8 @@ async def get_all_trader_ids():
             "trader_ids": trader_ids,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[REPORT] ✗ Exception in trader_ids: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -285,22 +289,19 @@ async def get_all_trader_ids():
 @router.get("/funnel/summary")
 async def get_funnel_summary(
     start_date: date = Query(..., description="Начало диапазона (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="Конец диапазона (YYYY-MM-DD)")
+    end_date: date = Query(..., description="Конец диапазона (YYYY-MM-DD)"),
+    x_api_key: str = Header(None, alias="X-API-Key")
 ):
     """
-    Быстрое сравнение: когортный vs некогортный за один запрос.
-    Удобно для дашборда — возвращает оба totals рядом.
-
-    GET /api/report/funnel/summary?start_date=2026-02-10&end_date=2026-02-22
+    Когортный vs некогортный за один запрос.
+    Требуется заголовок: X-API-Key
     """
+    verify_api_key(x_api_key)
+
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="start_date must be <= end_date")
 
-    params = {
-        "tz": TZ,
-        "start": str(start_date),
-        "end": str(end_date),
-    }
+    params = {"tz": TZ, "start": str(start_date), "end": str(end_date)}
 
     try:
         cohort_rows = [_serialize_row(r) for r in _run_query(COHORT_SQL, params)]
@@ -321,6 +322,8 @@ async def get_funnel_summary(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[REPORT] ✗ Exception: {e}")
         import traceback
