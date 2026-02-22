@@ -4,7 +4,7 @@ import httpx
 from typing import List, Dict, Any, Optional
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as tz
 from db import DataBase
 from config import (
     KEITARO_DOMAIN,
@@ -622,7 +622,7 @@ async def test_subid_request(sub_id: str):
         result = {
             "test_mode": True,
             "sub_id": sub_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(tz.utc).isoformat(),
             "keitaro_domain": KEITARO_DOMAIN,
             "request_status": "success" if conversion_data.get("found") else "not_found",
             "data": conversion_data
