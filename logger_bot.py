@@ -3,7 +3,7 @@ Telegram Logger Bot
 Отправляет логи ошибок в Telegram группу/чат
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import traceback
 from aiogram import Bot
@@ -51,7 +51,7 @@ async def send_error_log(
 
     try:
         # Формируем сообщение
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         message_parts = [
             f"🔴 <b>{error_type}</b>",
@@ -120,7 +120,7 @@ async def send_success_log(
         return
 
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         message_parts = [
             f"✅ <b>{log_type}</b>",
@@ -170,7 +170,7 @@ async def send_warning_log(
         return
 
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         message_parts = [
             f"⚠️ <b>{warning_type}</b>",

@@ -1,6 +1,6 @@
 import aiohttp
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from config import *
 from typing import Optional
 from urllib.parse import urlencode
@@ -80,7 +80,7 @@ async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postb
     - connect timeout: 5с (быстро детектим мёртвые сокеты)
     - keepalive: 30с → 10с (Cloudflare режет idle раньше)
     """
-    start_time = datetime.now()
+    start_time = datetime.now(timezone.utc)
     last_exception = None
 
     # Формируем полный URL для логирования
@@ -110,8 +110,8 @@ async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postb
                     "text": text,
                     "attempt": attempt,
                     "error_type": None,
-                    "timestamp": start_time.strftime('%H:%M:%S'),
-                    "duration": (datetime.now() - start_time).total_seconds(),
+                    "timestamp": start_time.strftime('%H:%M:%S UTC'),
+                    "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
                     "full_url": full_url
                 }
             else:
@@ -212,8 +212,8 @@ async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postb
         "text": str(last_exception),
         "attempt": retries,
         "error_type": type(last_exception).__name__,
-        "timestamp": start_time.strftime('%H:%M:%S'),
-        "duration": (datetime.now() - start_time).total_seconds(),
+        "timestamp": start_time.strftime('%H:%M:%S UTC'),
+        "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
         "full_url": full_url
     }
 

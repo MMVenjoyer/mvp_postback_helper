@@ -3,7 +3,7 @@ import psycopg2.extras
 from psycopg2 import pool
 from config import DB_CONFIG
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from contextlib import contextmanager
 
@@ -49,12 +49,16 @@ class DataBase:
     @contextmanager
     def get_connection(self):
         """
-        Context manager для безопасного получения и возврата соединения из пула
+        Context manager для безопасного получения и возврата соединения из пула.
+        Устанавливает timezone = UTC для каждого соединения.
         """
         conn = None
         try:
             conn = self._pool.getconn()
             conn.autocommit = True
+            # Гарантируем UTC для всех SQL-запросов через это соединение
+            with conn.cursor() as cur:
+                cur.execute("SET timezone = 'UTC'")
             yield conn
         except Exception as e:
             print(f"[DB] ✗ Ошибка при работе с соединением: {e}")
@@ -219,7 +223,7 @@ class DataBase:
                         subscriber_id,
                         trader_id,
                         clickid_chatterfry,
-                        datetime.now()
+                        datetime.now(timezone.utc)
                     ))
 
                     result = cursor.fetchone()
@@ -443,21 +447,21 @@ class DataBase:
 
                 if action == "ftm":
                     update_fields = ["ftm_time = %s"]
-                    params = [datetime.now()]
+                    params = [datetime.now(timezone.utc)]
 
                 elif action == "reg":
                     update_fields = ["reg = TRUE", "reg_time = %s"]
-                    params = [datetime.now()]
+                    params = [datetime.now(timezone.utc)]
 
                 elif action == "dep":
                     update_fields = ["dep = TRUE",
                                      "dep_time = %s", "dep_sum = %s"]
-                    params = [datetime.now(), sum_amount]
+                    params = [datetime.now(timezone.utc), sum_amount]
 
                 elif action == "redep":
                     update_fields = ["redep = TRUE",
                                      "redep_time = %s", "redep_sum = %s"]
-                    params = [datetime.now(), sum_amount]
+                    params = [datetime.now(timezone.utc), sum_amount]
 
                 else:
                     return {"success": True, "message": "Custom action, only transaction created"}
@@ -1330,7 +1334,7 @@ class DataBase:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    now = datetime.now()
+                    now = datetime.now(timezone.utc)
 
                     # Проверяем существование пользователя
                     cursor.execute(
@@ -1519,7 +1523,7 @@ class DataBase:
                         SET manager = %s, manager_assigned_at = %s
                         WHERE id = %s
                         RETURNING manager
-                    """, (manager, datetime.now(), user_id))
+                    """, (manager, datetime.now(timezone.utc), user_id))
 
                     result = cursor.fetchone()
 
