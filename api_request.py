@@ -12,6 +12,12 @@ from logger_bot import send_error_log
 # ==========================================
 _http_session: Optional[aiohttp.ClientSession] = None
 
+# ==========================================
+# СЕМАФОР: ограничиваем параллельные запросы к Keitaro
+# Максимум 2 одновременных — стабильность важнее скорости
+# ==========================================
+_keitaro_semaphore: asyncio.Semaphore = asyncio.Semaphore(2)
+
 
 def _make_connector() -> aiohttp.TCPConnector:
     """Создаёт TCP коннектор с оптимальными настройками"""
@@ -34,9 +40,9 @@ async def get_http_session() -> aiohttp.ClientSession:
         _http_session = aiohttp.ClientSession(
             connector=_make_connector(),
             timeout=aiohttp.ClientTimeout(
-                total=10,       # общий таймаут 10с
+                total=15,       # общий таймаут 15с (было 10 — мало при очереди)
                 connect=5,      # таймаут на подключение 5с (ловим stale быстрее)
-                sock_read=8,    # таймаут на чтение 8с
+                sock_read=12,   # таймаут на чтение 12с (было 8)
             )
         )
     return _http_session
@@ -62,7 +68,7 @@ async def _fresh_request(url: str, params: dict = None) -> dict:
         limit=5,
         force_close=True,  # закрываем после использования
     )
-    timeout = aiohttp.ClientTimeout(total=10, connect=5)
+    timeout = aiohttp.ClientTimeout(total=15, connect=5)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         async with session.get(url, params=params) as resp:
@@ -70,15 +76,18 @@ async def _fresh_request(url: str, params: dict = None) -> dict:
             return {"status": resp.status, "text": text}
 
 
-async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postback_type=None, user_id=None):
+async def fetch_with_retry(url, params=None, retries=3, delay=3, bot=None, postback_type=None, user_id=None):
     """
     Отправка HTTP запроса с повторными попытками и логированием ошибок
 
-    v2.3: Фикс stale connections
+    v2.4: Фикс burst таймаутов
+    - Семафор на 5 параллельных запросов (Cloudflare/Keitaro лимит)
+    - 3 попытки вместо 2 (третья — после паузы, обычно проходит)
     - Attempt 1: через shared session (быстро, переиспользует соединения)
     - Attempt 2: через FRESH session (новое TCP соединение, обходит stale)
+    - Attempt 3: через FRESH session после увеличенной паузы
     - connect timeout: 5с (быстро детектим мёртвые сокеты)
-    - keepalive: 30с → 10с (Cloudflare режет idle раньше)
+    - keepalive: 10с (Cloudflare режет idle раньше)
     """
     start_time = datetime.now(timezone.utc)
     last_exception = None
@@ -88,108 +97,112 @@ async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postb
     if params:
         full_url = f"{url}?{urlencode(params)}"
 
-    for attempt in range(1, retries + 1):
-        try:
-            if attempt == 1:
-                # Первая попытка — shared session (быстрая)
-                session = await get_http_session()
-                async with session.get(url, params=params) as resp:
-                    text = await resp.text()
-                    status = resp.status
-            else:
-                # Retry — свежее соединение (обходит stale keepalive)
-                print(f"[HTTP] 🔄 Retry #{attempt} через fresh connection: {full_url}")
-                result = await _fresh_request(url, params)
-                status = result["status"]
-                text = result["text"]
+    # Семафор — ждём свою очередь (не больше 5 одновременных к Keitaro)
+    async with _keitaro_semaphore:
+        for attempt in range(1, retries + 1):
+            try:
+                if attempt == 1:
+                    # Первая попытка — shared session (быстрая)
+                    session = await get_http_session()
+                    async with session.get(url, params=params) as resp:
+                        text = await resp.text()
+                        status = resp.status
+                else:
+                    # Retry — свежее соединение (обходит stale keepalive)
+                    print(f"[HTTP] 🔄 Retry #{attempt} через fresh connection: {full_url}")
+                    result = await _fresh_request(url, params)
+                    status = result["status"]
+                    text = result["text"]
 
-            if status == 200:
-                return {
-                    "ok": True,
-                    "status": status,
-                    "text": text,
-                    "attempt": attempt,
-                    "error_type": None,
-                    "timestamp": start_time.strftime('%H:%M:%S UTC'),
-                    "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
-                    "full_url": full_url
-                }
-            else:
-                last_exception = Exception(
-                    f"HTTP {status}: {text[:200]}...")
+                if status == 200:
+                    return {
+                        "ok": True,
+                        "status": status,
+                        "text": text,
+                        "attempt": attempt,
+                        "error_type": None,
+                        "timestamp": start_time.strftime('%H:%M:%S UTC'),
+                        "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
+                        "full_url": full_url
+                    }
+                else:
+                    last_exception = Exception(
+                        f"HTTP {status}: {text[:200]}...")
 
+                    if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                        await send_error_log(
+                            error_type="KEITARO_HTTP_ERROR",
+                            error_message=f"HTTP {status} при отправке постбэка",
+                            user_id=user_id,
+                            additional_info={
+                                "url": full_url,
+                                "postback_type": postback_type,
+                                "status_code": status,
+                                "response": text[:200],
+                                "attempts": attempt
+                            },
+                            full_traceback=False
+                        )
+
+            except asyncio.TimeoutError:
+                last_exception = Exception(f"Таймаут запроса (attempt {attempt})")
                 if attempt == retries and ENABLE_TELEGRAM_LOGS:
                     await send_error_log(
-                        error_type="KEITARO_HTTP_ERROR",
-                        error_message=f"HTTP {status} при отправке постбэка",
+                        error_type="KEITARO_TIMEOUT",
+                        error_message="Превышено время ожидания ответа",
                         user_id=user_id,
                         additional_info={
                             "url": full_url,
                             "postback_type": postback_type,
-                            "status_code": status,
-                            "response": text[:200],
-                            "attempts": attempt
+                            "timeout": "15 сек",
+                            "attempts": attempt,
+                            "used_fresh_session": attempt > 1
                         },
                         full_traceback=False
                     )
 
-        except asyncio.TimeoutError:
-            last_exception = Exception(f"Таймаут запроса (attempt {attempt})")
-            if attempt == retries and ENABLE_TELEGRAM_LOGS:
-                await send_error_log(
-                    error_type="KEITARO_TIMEOUT",
-                    error_message="Превышено время ожидания ответа",
-                    user_id=user_id,
-                    additional_info={
-                        "url": full_url,
-                        "postback_type": postback_type,
-                        "timeout": "10 сек",
-                        "attempts": attempt,
-                        "used_fresh_session": attempt > 1
-                    },
-                    full_traceback=False
-                )
+            except (aiohttp.ClientError, aiohttp.ServerDisconnectedError, 
+                    aiohttp.ClientOSError, ConnectionResetError) as e:
+                last_exception = Exception(f"Ошибка соединения: {str(e)}")
+                
+                # При ошибке соединения на первой попытке — пересоздаём shared session
+                if attempt == 1:
+                    print(f"[HTTP] ⚠️ Connection error, recreating shared session: {e}")
+                    await close_http_session()
+                
+                if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                    await send_error_log(
+                        error_type="KEITARO_CLIENT_ERROR",
+                        error_message=f"Ошибка HTTP клиента: {str(e)}",
+                        user_id=user_id,
+                        additional_info={
+                            "url": full_url,
+                            "postback_type": postback_type,
+                            "attempts": attempt
+                        },
+                        full_traceback=True
+                    )
 
-        except (aiohttp.ClientError, aiohttp.ServerDisconnectedError, 
-                aiohttp.ClientOSError, ConnectionResetError) as e:
-            last_exception = Exception(f"Ошибка соединения: {str(e)}")
-            
-            # При ошибке соединения на первой попытке — пересоздаём shared session
-            if attempt == 1:
-                print(f"[HTTP] ⚠️ Connection error, recreating shared session: {e}")
-                await close_http_session()
-            
-            if attempt == retries and ENABLE_TELEGRAM_LOGS:
-                await send_error_log(
-                    error_type="KEITARO_CLIENT_ERROR",
-                    error_message=f"Ошибка HTTP клиента: {str(e)}",
-                    user_id=user_id,
-                    additional_info={
-                        "url": full_url,
-                        "postback_type": postback_type,
-                        "attempts": attempt
-                    },
-                    full_traceback=True
-                )
+            except Exception as e:
+                last_exception = Exception(f"Неизвестная ошибка: {str(e)}")
+                if attempt == retries and ENABLE_TELEGRAM_LOGS:
+                    await send_error_log(
+                        error_type="KEITARO_UNKNOWN_ERROR",
+                        error_message=f"Неизвестная ошибка при отправке постбэка: {str(e)}",
+                        user_id=user_id,
+                        additional_info={
+                            "url": full_url,
+                            "postback_type": postback_type,
+                            "attempts": attempt
+                        },
+                        full_traceback=True
+                    )
 
-        except Exception as e:
-            last_exception = Exception(f"Неизвестная ошибка: {str(e)}")
-            if attempt == retries and ENABLE_TELEGRAM_LOGS:
-                await send_error_log(
-                    error_type="KEITARO_UNKNOWN_ERROR",
-                    error_message=f"Неизвестная ошибка при отправке постбэка: {str(e)}",
-                    user_id=user_id,
-                    additional_info={
-                        "url": full_url,
-                        "postback_type": postback_type,
-                        "attempts": attempt
-                    },
-                    full_traceback=True
-                )
-
-        # Короткая пауза перед retry (не блокируем event loop надолго)
-        if attempt < retries:
-            await asyncio.sleep(min(delay * attempt, 10))
+            # Пауза перед retry — экспоненциальная с jitter
+            if attempt < retries:
+                import random
+                wait = min(delay * attempt, 10) + random.uniform(0.5, 2.0)
+                await asyncio.sleep(wait)
 
     # Финальная ошибка после всех попыток
     if ENABLE_TELEGRAM_LOGS:
@@ -218,10 +231,12 @@ async def fetch_with_retry(url, params=None, retries=2, delay=5, bot=None, postb
     }
 
 
-async def send_keitaro_postback(subid: str, status: str, payout: float = None, tid: int = None, retries=2, delay=5, bot=None, user_id=None):
+async def send_keitaro_postback(subid: str, status: str, payout: float = None, tid: int = None, retries=3, delay=3, bot=None, user_id=None):
     """
     Постбэк в Keitaro
     URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100&tid=4
+    
+    v2.4: retries=3, delay=3 (было 2/5)
     """
     from config import KEITARO_POSTBACK_URL
 
