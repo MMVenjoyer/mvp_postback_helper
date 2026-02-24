@@ -30,6 +30,11 @@ v2.2: Параллельная отправка постбэков через as
 - FTM: Chatterfy FTM + Keitaro параллельно
 - DEP: Chatterfy DEP + Keitaro параллельно
 - REDEP: Chatterfy REDEP + Keitaro параллельно
+
+v2.4.1: Фикс пустого id от Pocket Option
+- Pocket Option шлёт id= (пустая строка) → FastAPI 422
+- id теперь принимается как str и парсится вручную
+- Поиск по clickid работает когда id пустой
 """
 
 from fastapi import APIRouter, Query
@@ -82,6 +87,28 @@ def sanitize_identifier(value: str, param_name: str = "param") -> Optional[str]:
         return None
     
     return value
+
+
+def parse_id_parameter(id_value) -> Optional[int]:
+    """
+    Безопасно парсит параметр id.
+    Pocket Option иногда шлёт id= (пустая строка) → FastAPI 422 если тип int.
+    Принимаем как str, парсим вручную.
+
+    Returns:
+        int (positive) или None
+    """
+    if id_value is None or id_value == "":
+        return None
+
+    if isinstance(id_value, int):
+        return id_value if id_value > 0 else None
+
+    try:
+        parsed = int(id_value)
+        return parsed if parsed > 0 else None
+    except (ValueError, TypeError):
+        return None
 
 
 def parse_sum_parameter(sum_value) -> float:
@@ -598,7 +625,7 @@ async def reg_postback(
 
 @router.get("/dep")
 async def dep_postback(
-    id: int = Query(None, description="Telegram User ID"),
+    id: str = Query(None, description="Telegram User ID"),
     sum: str = Query(None, description="Deposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
@@ -614,7 +641,11 @@ async def dep_postback(
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     
     v2.2: Chatterfy DEP + Keitaro SALE отправляются параллельно
+    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
     """
+    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
+    id = parse_id_parameter(id)
+
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
@@ -820,7 +851,7 @@ async def dep_postback(
 
 @router.get("/redep")
 async def redep_postback(
-    id: int = Query(None, description="Telegram User ID"),
+    id: str = Query(None, description="Telegram User ID"),
     sum: str = Query(None, description="Redeposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
@@ -836,7 +867,11 @@ async def redep_postback(
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     
     v2.2: Chatterfy REDEP + Keitaro DEP отправляются параллельно
+    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
     """
+    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
+    id = parse_id_parameter(id)
+
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
@@ -1042,7 +1077,7 @@ async def redep_postback(
 
 @router.get("/withdraw")
 async def withdraw_postback(
-    id: int = Query(None, description="Telegram User ID"),
+    id: str = Query(None, description="Telegram User ID"),
     sum: str = Query(None, description="Withdraw amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
@@ -1054,13 +1089,13 @@ async def withdraw_postback(
     Вывод средств пользователя
     Отправляет событие withdraw в Chatterfy с суммой вывода
 
-    URL для Chatterfy:
-    https://api.chatterfy.ai/api/postbacks/.../tracker-postback?tracker.event=withdraw&clickid={clickid}&fields.withdraw={sum}
-
     ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
     
-    WITHDRAW отправляет только Chatterfy постбэк (один HTTP вызов), параллелизация не нужна.
+    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
     """
+    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
+    id = parse_id_parameter(id)
+
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
@@ -1374,7 +1409,7 @@ async def get_manager_stats():
 
 @router.get("/revenue")
 async def revenue_postback(
-    id: int = Query(None, description="Telegram User ID (optional)"),
+    id: str = Query(None, description="Telegram User ID (optional)"),
     sum: str = Query(None, description="Revenue amount (actual total revenue)"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
     subscriber_id: str = Query(
@@ -1389,15 +1424,11 @@ async def revenue_postback(
     - В transactions записываем каждое событие как есть (action='revenue', sum=переданная сумма)
     - В users.revenue ПЕРЕЗАПИСЫВАЕМ значение на актуальное (не суммируем)
     
-    Приоритет поиска:
-    1. trader_id (если передан - ищем по нему первым)
-    2. id (Telegram User ID)
-    3. subscriber_id, clickid
-    
-    Если id и trader_id указывают на РАЗНЫХ юзеров - используем того, кого нашли по trader_id.
-    
-    REVENUE отправляет только Keitaro постбэк (один HTTP вызов), параллелизация не нужна.
+    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
     """
+    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
+    id = parse_id_parameter(id)
+
     # Санитизация идентификаторов - фильтруем плейсхолдеры
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
