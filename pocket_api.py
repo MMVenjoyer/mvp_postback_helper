@@ -20,10 +20,17 @@ import hashlib
 import asyncio
 import aiohttp
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from config import POCKET_API_TOKEN, POCKET_PARTNER_ID, POCKET_API_BASE_URL
+
+# ==========================================
+# IN-MEMORY КЭШ (TTL 5 минут)
+# ==========================================
+CACHE_TTL = 300  # секунд
+_cache: Dict[int, Dict[str, Any]] = {}  # {user_id: {"data": {...}, "ts": time.time()}}
 
 
 def compute_hash(user_id: str, partner_id: str, api_token: str) -> str:
@@ -166,12 +173,20 @@ def save_pocket_data_to_db(db, user_id: int, pocket_data: dict) -> bool:
 async def sync_and_get_balance(db, user_id: int) -> Dict[str, Any]:
     """
     Главная функция: синкает данные с покета и возвращает результат.
+    Кэширует ответ на 5 минут — повторные вызовы не дёргают API.
 
-    1. Берём trader_id из БД
-    2. Дёргаем Pocket Option API
-    3. Сохраняем в БД
-    4. Возвращаем balance + pocket_data
+    1. Проверяем кэш
+    2. Берём trader_id из БД
+    3. Дёргаем Pocket Option API
+    4. Сохраняем в БД + кэш
+    5. Возвращаем balance + pocket_data
     """
+    # 0. Проверяем кэш
+    cached = _cache.get(user_id)
+    if cached and (time.time() - cached["ts"]) < CACHE_TTL:
+        print(f"[POCKET] ⚡ Кэш хит: user {user_id}, age={int(time.time() - cached['ts'])}s")
+        return cached["data"]
+
     # 1. Получаем trader_id
     trader_id = db.get_user_trader_id(user_id)
 
@@ -198,16 +213,20 @@ async def sync_and_get_balance(db, user_id: int) -> Dict[str, Any]:
 
     pocket_data = result["data"]
 
-    # 3. Сохраняем
+    # 3. Сохраняем в БД
     save_pocket_data_to_db(db, user_id, pocket_data)
 
-    # 4. Возвращаем — balance прямо из ответа API
-    return {
+    # 4. Формируем ответ и кладём в кэш
+    response = {
         "synced": True,
         "balance": pocket_data.get("balance"),
         "pocket_data": pocket_data,
         "error": None
     }
+
+    _cache[user_id] = {"data": response, "ts": time.time()}
+
+    return response
 
 
 def _get_balance_from_db(db, user_id: int) -> Optional[float]:
