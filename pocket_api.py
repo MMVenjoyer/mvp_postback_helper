@@ -7,6 +7,13 @@ Pocket Option API Client
 API Pocket Option:
   URL: https://affiliate.pocketoption.com/api/user-info/{user_id}/{partner_id}/{hash}
   hash = md5("{user_id}:{partner_id}:{api_token}")
+
+Реальные поля ответа API:
+  uid, reg_date, activity_date, country, is_verified,
+  sum_ftd, date_ftd, count_deposits, sum_deposits, balance,
+  sum_bonuses, count_bonuses, profit_lose, net_turnover,
+  commission, hide_profit, hide_commission, self_excluded,
+  link_type, offer_type, link
 """
 
 import hashlib
@@ -71,12 +78,16 @@ async def fetch_pocket_user_info(trader_id: str) -> Dict[str, Any]:
                 if isinstance(data, dict) and data.get("error"):
                     return {"success": False, "error": data["error"]}
 
-                print(f"[POCKET] ✓ Данные получены: trader_id={trader_id}")
+                print(f"[POCKET] ✓ Данные получены: trader_id={trader_id}, balance={data.get('balance')}")
                 return {"success": True, "data": data}
 
     except asyncio.TimeoutError:
         print(f"[POCKET] ✗ Таймаут: trader_id={trader_id}")
         return {"success": False, "error": "Timeout (10s)"}
+
+    except aiohttp.ClientError as e:
+        print(f"[POCKET] ✗ Ошибка соединения: {e}")
+        return {"success": False, "error": f"Connection error: {str(e)}"}
 
     except Exception as e:
         print(f"[POCKET] ✗ Ошибка: {e}")
@@ -86,7 +97,15 @@ async def fetch_pocket_user_info(trader_id: str) -> Dict[str, Any]:
 def save_pocket_data_to_db(db, user_id: int, pocket_data: dict) -> bool:
     """
     Обновляет поля Pocket Option в таблице users.
-    Вызывается синхронно (db уже есть).
+
+    Маппинг полей API -> БД:
+      balance           -> balance
+      sum_deposits      -> pocket_total_deposits
+      sum_ftd           -> pocket_ftd_amount
+      country           -> pocket_country
+      reg_date          -> pocket_registered_at
+      is_verified       -> pocket_status ('verified' / 'active')
+      NOW()             -> pocket_synced_at
 
     Returns:
         True если обновлено, False если ошибка
@@ -96,20 +115,19 @@ def save_pocket_data_to_db(db, user_id: int, pocket_data: dict) -> bool:
             with conn.cursor() as cursor:
                 now = datetime.now(timezone.utc)
 
-                # Парсим registered_at
+                # Парсим reg_date (формат: "2026-02-18")
                 registered_at = None
-                if pocket_data.get("registered_at"):
+                if pocket_data.get("reg_date"):
                     try:
-                        registered_at = datetime.fromisoformat(
-                            pocket_data["registered_at"].replace("Z", "+00:00")
-                        )
+                        registered_at = datetime.strptime(
+                            pocket_data["reg_date"], "%Y-%m-%d"
+                        ).replace(tzinfo=timezone.utc)
                     except (ValueError, AttributeError):
                         pass
 
                 cursor.execute("""
                     UPDATE users SET
                         balance = %s,
-                        demo_balance = %s,
                         pocket_status = %s,
                         pocket_total_deposits = %s,
                         pocket_ftd_amount = %s,
@@ -118,11 +136,10 @@ def save_pocket_data_to_db(db, user_id: int, pocket_data: dict) -> bool:
                         pocket_synced_at = %s
                     WHERE id = %s
                 """, (
-                    pocket_data.get("real_balance"),
-                    pocket_data.get("demo_balance"),
-                    pocket_data.get("status"),
-                    pocket_data.get("total_deposits"),
-                    pocket_data.get("ftd_amount"),
+                    pocket_data.get("balance"),
+                    'verified' if pocket_data.get("is_verified") else 'active',
+                    pocket_data.get("sum_deposits"),
+                    pocket_data.get("sum_ftd"),
                     pocket_data.get("country"),
                     registered_at,
                     now,
@@ -130,7 +147,12 @@ def save_pocket_data_to_db(db, user_id: int, pocket_data: dict) -> bool:
                 ))
 
                 if cursor.rowcount > 0:
-                    print(f"[POCKET DB] ✓ user {user_id}: balance={pocket_data.get('real_balance')}, status={pocket_data.get('status')}")
+                    print(
+                        f"[POCKET DB] ✓ user {user_id}: "
+                        f"balance={pocket_data.get('balance')}, "
+                        f"deposits={pocket_data.get('sum_deposits')}, "
+                        f"country={pocket_data.get('country')}"
+                    )
                     return True
                 else:
                     print(f"[POCKET DB] ✗ user {user_id} не найден")
@@ -145,25 +167,15 @@ async def sync_and_get_balance(db, user_id: int) -> Dict[str, Any]:
     """
     Главная функция: синкает данные с покета и возвращает результат.
 
-    Логика:
     1. Берём trader_id из БД
     2. Дёргаем Pocket Option API
     3. Сохраняем в БД
     4. Возвращаем balance + pocket_data
-
-    Returns:
-        {
-            "synced": True/False,
-            "balance": 260.0 или None,
-            "pocket_data": {...} или None,
-            "error": "..." или None
-        }
     """
     # 1. Получаем trader_id
     trader_id = db.get_user_trader_id(user_id)
 
     if not trader_id:
-        # Нет trader_id — возвращаем баланс из БД если есть
         balance = _get_balance_from_db(db, user_id)
         return {
             "synced": False,
@@ -176,7 +188,6 @@ async def sync_and_get_balance(db, user_id: int) -> Dict[str, Any]:
     result = await fetch_pocket_user_info(trader_id)
 
     if not result.get("success"):
-        # API не ответил — возвращаем старый баланс из БД
         balance = _get_balance_from_db(db, user_id)
         return {
             "synced": False,
@@ -190,10 +201,10 @@ async def sync_and_get_balance(db, user_id: int) -> Dict[str, Any]:
     # 3. Сохраняем
     save_pocket_data_to_db(db, user_id, pocket_data)
 
-    # 4. Возвращаем
+    # 4. Возвращаем — balance прямо из ответа API
     return {
         "synced": True,
-        "balance": pocket_data.get("real_balance"),
+        "balance": pocket_data.get("balance"),
         "pocket_data": pocket_data,
         "error": None
     }
