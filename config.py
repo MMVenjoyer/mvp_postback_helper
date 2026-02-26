@@ -57,6 +57,13 @@ CHAT_ID = os.getenv("CHAT_ID", "your_chat_id_here")
 ENABLE_TELEGRAM_LOGS = os.getenv(
     "ENABLE_TELEGRAM_LOGS", "true").lower() == "true"
 
+POCKET_API_TOKEN = os.getenv("POCKET_API_TOKEN", "")
+POCKET_PARTNER_ID = os.getenv("POCKET_PARTNER_ID", "")
+POCKET_API_BASE_URL = os.getenv(
+    "POCKET_API_BASE_URL",
+    "https://affiliate.pocketoption.com"
+)
+
 # Выводим конфигурацию при загрузке (без пароля и API ключа)
 print("=" * 50)
 print("📋 ЗАГРУЖЕННАЯ КОНФИГУРАЦИЯ")

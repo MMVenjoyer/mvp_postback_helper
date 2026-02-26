@@ -51,6 +51,7 @@ from api_request import (
 )
 from logger_bot import send_error_log
 from config import ENABLE_TELEGRAM_LOGS
+from pocket_api import sync_and_get_balance
 
 db = DataBase()
 router = APIRouter()
@@ -1254,15 +1255,28 @@ async def withdraw_postback(
 async def get_status_reg(
     id: int = Query(..., description="Telegram User ID")
 ):
-    """Проверяет статус регистрации пользователя (есть ли reg_time)"""
+    """
+    Проверяет статус регистрации пользователя (есть ли reg_time).
+    Заодно синкает данные с Pocket Option и возвращает баланс.
+    """
     try:
+        reg_status = False
         with db.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT reg_time FROM users WHERE id = %s", (id,))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
-                    return {"status": True}
-                return {"status": False}
+                    reg_status = True
+
+        # Синк с Pocket Option (не блокирует ответ при ошибке)
+        pocket = await sync_and_get_balance(db, id)
+
+        return {
+            "status": reg_status,
+            "balance": pocket.get("balance"),
+            "pocket_synced": pocket.get("synced", False),
+        }
+
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -1271,15 +1285,28 @@ async def get_status_reg(
 async def get_status_dep(
     id: int = Query(..., description="Telegram User ID")
 ):
-    """Проверяет статус депозита пользователя (есть ли dep_time)"""
+    """
+    Проверяет статус депозита пользователя (есть ли dep_time).
+    Заодно синкает данные с Pocket Option и возвращает баланс.
+    """
     try:
+        dep_status = False
         with db.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT dep_time FROM users WHERE id = %s", (id,))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
-                    return {"status": True}
-                return {"status": False}
+                    dep_status = True
+
+        # Синк с Pocket Option (не блокирует ответ при ошибке)
+        pocket = await sync_and_get_balance(db, id)
+
+        return {
+            "status": dep_status,
+            "balance": pocket.get("balance"),
+            "pocket_synced": pocket.get("synced", False),
+        }
+
     except Exception as e:
         return {"status": "error", "error": str(e)}
     
