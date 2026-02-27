@@ -51,10 +51,15 @@ class KeitaroCampaignService:
             logger.error(f"Ошибка получения пользователей: {e}")
             return []
 
-    async def get_conversion_data(self, sub_id: str) -> Dict[str, Any]:
+    async def get_conversion_data(self, sub_id: str, retries: int = 3) -> Dict[str, Any]:
         """
         Получает данные конверсии из Keitaro API по sub_id
         Возвращает: кампанию, лендинг, страну, город, устройство, ОС, браузер
+
+        v2.5: Добавлен retry с экспоненциальной задержкой.
+        Ранее был 1 запрос — если Keitaro временно недоступен (напр. ~3 AM MSK),
+        все попытки бота фейлились. Теперь deeplink-service сам переживает
+        короткие сбои Keitaro (retry 2/4/6 сек).
         """
         headers = {
             "Api-Key": KEITARO_ADMIN_API_KEY,
@@ -83,45 +88,77 @@ class KeitaroCampaignService:
             ]
         }
 
-        try:
-            response = await self.session.post(
-                f"{KEITARO_DOMAIN}/admin_api/v1/conversions/log",
-                headers=headers,
-                json=payload
-            )
+        last_error = None
 
-            if response.status_code == 200:
-                data = response.json()
+        for attempt in range(1, retries + 1):
+            try:
+                response = await self.session.post(
+                    f"{KEITARO_DOMAIN}/admin_api/v1/conversions/log",
+                    headers=headers,
+                    json=payload
+                )
 
-                # Keitaro возвращает rows как массив объектов
-                if data.get("rows") and len(data["rows"]) > 0:
-                    row = data["rows"][0]  # Берем первую запись
+                if response.status_code == 200:
+                    data = response.json()
 
-                    # row - это уже объект с ключами
-                    return {
-                        "campaign_id": row.get("campaign_id"),
-                        "campaign": row.get("campaign"),
-                        "landing_id": row.get("landing_id"),
-                        "landing": row.get("landing"),
-                        # код страны (US, AE, etc.)
-                        "country": row.get("country_flag"),
-                        "city": row.get("city"),  # город
-                        # desktop, mobile, tablet
-                        "device_type": row.get("device_model"),
-                        "os": row.get("os"),  # операционная система
-                        "browser": row.get("browser"),  # браузер
-                        "found": True
-                    }
+                    # Keitaro возвращает rows как массив объектов
+                    if data.get("rows") and len(data["rows"]) > 0:
+                        row = data["rows"][0]  # Берем первую запись
+
+                        return {
+                            "campaign_id": row.get("campaign_id"),
+                            "campaign": row.get("campaign"),
+                            "landing_id": row.get("landing_id"),
+                            "landing": row.get("landing"),
+                            "country": row.get("country_flag"),
+                            "city": row.get("city"),
+                            "device_type": row.get("device_model"),
+                            "os": row.get("os"),
+                            "browser": row.get("browser"),
+                            "found": True
+                        }
+                    else:
+                        # Пустые rows — данные ещё не появились в Keitaro
+                        # или временная проблема. Retry имеет смысл только
+                        # при кратковременном сбое Keitaro, а не при отсутствии данных.
+                        # Но для единообразия даём пару попыток.
+                        last_error = "No data in response"
+                        if attempt < retries:
+                            wait = 2 * attempt
+                            logger.warning(
+                                f"Empty rows for sub_id {sub_id} "
+                                f"(attempt {attempt}/{retries}), retry in {wait}s"
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        return {"found": False, "reason": "No data in response"}
                 else:
-                    return {"found": False, "reason": "No data in response"}
-            else:
-                logger.warning(
-                    f"API error for sub_id {sub_id}: {response.status_code}")
-                return {"found": False, "reason": f"API error: {response.status_code}"}
+                    last_error = f"API error: {response.status_code}"
+                    logger.warning(
+                        f"API error for sub_id {sub_id}: {response.status_code} "
+                        f"(attempt {attempt}/{retries})"
+                    )
+                    if attempt < retries:
+                        wait = 2 * attempt
+                        await asyncio.sleep(wait)
+                        continue
+                    return {"found": False, "reason": last_error}
 
-        except Exception as e:
-            logger.error(f"Request error for sub_id {sub_id}: {e}")
-            return {"found": False, "reason": str(e)}
+            except Exception as e:
+                # Логируем ТИП исключения + сообщение (раньше {e} был пустым
+                # для httpx.RemoteProtocolError, httpx.ReadTimeout и т.д.)
+                last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.error(
+                    f"Request error for sub_id {sub_id} "
+                    f"(attempt {attempt}/{retries}): {last_error}"
+                )
+                if attempt < retries:
+                    wait = 2 * attempt
+                    await asyncio.sleep(wait)
+                    continue
+                return {"found": False, "reason": last_error}
+
+        return {"found": False, "reason": last_error or "Unknown error after retries"}
 
     async def get_country_by_user_id(self, user_id: int) -> Dict[str, Any]:
         """
