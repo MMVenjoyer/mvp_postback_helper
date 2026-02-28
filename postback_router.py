@@ -8,6 +8,7 @@ Postback Router - обработка постбэков от внешних си
 - /postback/redep - Redeposit (повторный депозит)
 - /postback/withdraw - Withdraw (вывод средств)
 - /postback/revenue - Revenue (выручка с лида)
+- /postback/user_info - Информация о юзере (trader_id, clickid, статусы)
 
 Параметры запросов:
 - id: Telegram User ID (обязательный)
@@ -35,9 +36,13 @@ v2.4.1: Фикс пустого id от Pocket Option
 - Pocket Option шлёт id= (пустая строка) → FastAPI 422
 - id теперь принимается как str и парсится вручную
 - Поиск по clickid работает когда id пустой
+
+v2.4.2: Новый эндпоинт /postback/user_info
+- Возвращает trader_id, clickid_chatterfry, reg, dep по Telegram ID
+- Защищён X-API-Key
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Header, HTTPException
 from typing import Optional
 import asyncio
 import re
@@ -50,7 +55,7 @@ from api_request import (
     send_chatterfy_ftm_postback
 )
 from logger_bot import send_error_log
-from config import ENABLE_TELEGRAM_LOGS
+from config import ENABLE_TELEGRAM_LOGS, REPORT_API_KEY
 from pocket_api import sync_and_get_balance
 
 db = DataBase()
@@ -1656,4 +1661,70 @@ async def revenue_postback(
                 full_traceback=True
             )
 
+        return {"status": "error", "error": str(e)}
+
+
+# ==========================================
+# USER INFO (защищённый эндпоинт)
+# ==========================================
+
+@router.get("/user_info")
+async def get_user_info(
+    id: int = Query(..., description="Telegram User ID"),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Возвращает trader_id, clickid_chatterfry и статусы reg/dep по Telegram ID.
+    
+    Требуется заголовок: X-API-Key (тот же REPORT_API_KEY)
+    
+    Пример:
+        curl -H "X-API-Key: YOUR_KEY" "https://tylerwhite.icu/postback/user_info?id=123456789"
+    
+    Ответ:
+    {
+        "status": "ok",
+        "user_id": 123456789,
+        "trader_id": "12345",
+        "clickid_chatterfry": "abc123",
+        "reg": true,
+        "dep": false
+    }
+    """
+    # Проверка API ключа
+    if not REPORT_API_KEY:
+        raise HTTPException(status_code=500, detail="REPORT_API_KEY not configured on server")
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    if x_api_key != REPORT_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT trader_id, clickid_chatterfry, reg, dep
+                    FROM users
+                    WHERE id = %s
+                """, (id,))
+                result = cursor.fetchone()
+
+        if not result:
+            return {
+                "status": "not_found",
+                "user_id": id,
+                "error": "User not found"
+            }
+
+        return {
+            "status": "ok",
+            "user_id": id,
+            "trader_id": result[0],
+            "clickid_chatterfry": result[1],
+            "reg": bool(result[2]) if result[2] is not None else False,
+            "dep": bool(result[3]) if result[3] is not None else False
+        }
+
+    except Exception as e:
+        print(f"[POSTBACK USER_INFO] ✗ Exception: {e}")
         return {"status": "error", "error": str(e)}
