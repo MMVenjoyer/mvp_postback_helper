@@ -13,10 +13,13 @@ from logger_bot import send_error_log
 _http_session: Optional[aiohttp.ClientSession] = None
 
 # ==========================================
-# СЕМАФОР: ограничиваем параллельные запросы к Keitaro
-# Максимум 2 одновременных — стабильность важнее скорости
+# СЕМАФОРЫ: раздельные для Keitaro и Chatterfy
+# v2.5: Раньше был один _keitaro_semaphore(2) на оба сервиса —
+#        при параллельной отправке (asyncio.gather) они конкурировали
+#        за 2 слота, и Chatterfy таймаутил при нагрузке.
 # ==========================================
 _keitaro_semaphore: asyncio.Semaphore = asyncio.Semaphore(2)
+_chatterfy_semaphore: asyncio.Semaphore = asyncio.Semaphore(4)
 
 
 def _make_connector() -> aiohttp.TCPConnector:
@@ -59,16 +62,18 @@ async def close_http_session():
         print("[HTTP] ✓ HTTP сессия закрыта")
 
 
-async def _fresh_request(url: str, params: dict = None) -> dict:
+async def _fresh_request(url: str, params: dict = None, timeout_total: int = 15) -> dict:
     """
     Отправляет запрос через НОВУЮ сессию (не shared).
     Используется при retry после таймаута — гарантирует свежее TCP соединение.
+
+    v2.5: Добавлен настраиваемый timeout_total
     """
     connector = aiohttp.TCPConnector(
         limit=5,
         force_close=True,  # закрываем после использования
     )
-    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+    timeout = aiohttp.ClientTimeout(total=timeout_total, connect=5)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         async with session.get(url, params=params) as resp:
@@ -76,18 +81,19 @@ async def _fresh_request(url: str, params: dict = None) -> dict:
             return {"status": resp.status, "text": text}
 
 
-async def fetch_with_retry(url, params=None, retries=3, delay=3, bot=None, postback_type=None, user_id=None):
+async def fetch_with_retry(
+    url, params=None, retries=3, delay=3, bot=None,
+    postback_type=None, user_id=None, semaphore=None,
+    use_shared_session_first=True, timeout_total=15
+):
     """
     Отправка HTTP запроса с повторными попытками и логированием ошибок
 
-    v2.4: Фикс burst таймаутов
-    - Семафор на 5 параллельных запросов (Cloudflare/Keitaro лимит)
-    - 3 попытки вместо 2 (третья — после паузы, обычно проходит)
-    - Attempt 1: через shared session (быстро, переиспользует соединения)
-    - Attempt 2: через FRESH session (новое TCP соединение, обходит stale)
-    - Attempt 3: через FRESH session после увеличенной паузы
-    - connect timeout: 5с (быстро детектим мёртвые сокеты)
-    - keepalive: 10с (Cloudflare режет idle раньше)
+    v2.5: Фикс конкуренции Keitaro vs Chatterfy
+    - Раздельные семафоры (передаётся через параметр semaphore)
+    - use_shared_session_first=False → все попытки через fresh session
+      (для Chatterfy, у которого другой keepalive/CDN)
+    - timeout_total — настраиваемый таймаут для разных сервисов
     """
     start_time = datetime.now(timezone.utc)
     last_exception = None
@@ -97,20 +103,25 @@ async def fetch_with_retry(url, params=None, retries=3, delay=3, bot=None, postb
     if params:
         full_url = f"{url}?{urlencode(params)}"
 
-    # Семафор — ждём свою очередь (не больше 5 одновременных к Keitaro)
-    async with _keitaro_semaphore:
+    # Если семафор не передан — без ограничения
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(999)
+
+    # Семафор — ждём свою очередь
+    async with semaphore:
         for attempt in range(1, retries + 1):
             try:
-                if attempt == 1:
-                    # Первая попытка — shared session (быстрая)
+                if attempt == 1 and use_shared_session_first:
+                    # Первая попытка — shared session (быстрая, для Keitaro)
                     session = await get_http_session()
                     async with session.get(url, params=params) as resp:
                         text = await resp.text()
                         status = resp.status
                 else:
-                    # Retry — свежее соединение (обходит stale keepalive)
-                    print(f"[HTTP] 🔄 Retry #{attempt} через fresh connection: {full_url}")
-                    result = await _fresh_request(url, params)
+                    # Retry или Chatterfy — свежее соединение
+                    if attempt > 1:
+                        print(f"[HTTP] 🔄 Retry #{attempt} через fresh connection: {full_url}")
+                    result = await _fresh_request(url, params, timeout_total=timeout_total)
                     status = result["status"]
                     text = result["text"]
 
@@ -154,9 +165,9 @@ async def fetch_with_retry(url, params=None, retries=3, delay=3, bot=None, postb
                         additional_info={
                             "url": full_url,
                             "postback_type": postback_type,
-                            "timeout": "15 сек",
+                            "timeout": f"{timeout_total} сек",
                             "attempts": attempt,
-                            "used_fresh_session": attempt > 1
+                            "used_fresh_session": attempt > 1 or not use_shared_session_first
                         },
                         full_traceback=False
                     )
@@ -166,7 +177,7 @@ async def fetch_with_retry(url, params=None, retries=3, delay=3, bot=None, postb
                 last_exception = Exception(f"Ошибка соединения: {str(e)}")
                 
                 # При ошибке соединения на первой попытке — пересоздаём shared session
-                if attempt == 1:
+                if attempt == 1 and use_shared_session_first:
                     print(f"[HTTP] ⚠️ Connection error, recreating shared session: {e}")
                     await close_http_session()
                 
@@ -236,7 +247,7 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
     Постбэк в Keitaro
     URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100&tid=4
     
-    v2.4: retries=3, delay=3 (было 2/5)
+    v2.5: Использует _keitaro_semaphore + shared session
     """
     from config import KEITARO_POSTBACK_URL
 
@@ -258,7 +269,10 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
         delay=delay,
         bot=bot,
         postback_type=f"Keitaro_{status.upper()}",
-        user_id=user_id
+        user_id=user_id,
+        semaphore=_keitaro_semaphore,
+        use_shared_session_first=True,  # Keitaro — через shared (Cloudflare keepalive)
+        timeout_total=15,
     )
     result["postback_type"] = f"Keitaro {status.upper()}"
 
@@ -276,12 +290,14 @@ async def send_chatterfy_postback(
     sumdep: float,
     previous_dep: float,
     is_redep: bool = False,
-    retries: int = 2,
-    delay: int = 5,
+    retries: int = 3,
+    delay: int = 3,
     user_id: int = None
 ):
     """
     Постбэк в Chatterfy для отправки информации о депозитах
+
+    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session на каждую попытку
     """
     from config import CHATTERFY_POSTBACK_URL
 
@@ -302,7 +318,10 @@ async def send_chatterfy_postback(
         delay=delay,
         bot=None,
         postback_type=f"Chatterfy_{event_type.upper()}",
-        user_id=user_id
+        user_id=user_id,
+        semaphore=_chatterfy_semaphore,
+        use_shared_session_first=False,  # Chatterfy — всегда fresh (другой CDN/keepalive)
+        timeout_total=20,                # Chatterfy медленнее — даём 20с
     )
     result["postback_type"] = f"Chatterfy {event_type.upper()}"
 
@@ -318,12 +337,14 @@ async def send_chatterfy_postback(
 async def send_chatterfy_withdraw_postback(
     clickid: str,
     withdraw_amount: float,
-    retries: int = 2,
-    delay: int = 5,
+    retries: int = 3,
+    delay: int = 3,
     user_id: int = None
 ):
     """
     Постбэк в Chatterfy для отправки информации о выводе средств
+
+    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session
     """
     from config import CHATTERFY_POSTBACK_URL
 
@@ -340,7 +361,10 @@ async def send_chatterfy_withdraw_postback(
         delay=delay,
         bot=None,
         postback_type="Chatterfy_WITHDRAW",
-        user_id=user_id
+        user_id=user_id,
+        semaphore=_chatterfy_semaphore,
+        use_shared_session_first=False,
+        timeout_total=20,
     )
     result["postback_type"] = "Chatterfy WITHDRAW"
 
@@ -376,12 +400,14 @@ def determine_source_from_company(company: str) -> str:
 async def send_chatterfy_ftm_postback(
     clickid: str,
     company: str,
-    retries: int = 2,
-    delay: int = 5,
+    retries: int = 3,
+    delay: int = 3,
     user_id: int = None
 ):
     """
     Постбэк в Chatterfy при событии FTM (First Time Message)
+
+    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session
     """
     from config import CHATTERFY_POSTBACK_URL
 
@@ -402,7 +428,10 @@ async def send_chatterfy_ftm_postback(
         delay=delay,
         bot=None,
         postback_type="Chatterfy_FTM_SOURCE",
-        user_id=user_id
+        user_id=user_id,
+        semaphore=_chatterfy_semaphore,
+        use_shared_session_first=False,
+        timeout_total=20,
     )
     result["postback_type"] = "Chatterfy FTM_SOURCE"
     result["source"] = source
