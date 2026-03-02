@@ -31,6 +31,53 @@ def verify_api_key(x_api_key: str):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
+@router.get("/health")
+async def full_health_check(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Полная проверка здоровья сервиса"""
+    verify_api_key(x_api_key)
+
+    from service_monitor import keitaro_monitor, keitaro_rate_limiter
+    from postback_queue import postback_queue
+    from config import ENABLE_TELEGRAM_LOGS
+
+    try:
+        # DB check
+        db_ok = False
+        try:
+            stats = db.get_detailed_users_stats()
+            db_ok = True
+        except Exception:
+            stats = {}
+
+        # Queue stats
+        try:
+            queue_stats = postback_queue.get_stats()
+        except Exception:
+            queue_stats = {"error": "unavailable"}
+
+        # Service log stats (last 24h)
+        try:
+            log_stats = db.get_service_log_stats(hours=24)
+        except Exception:
+            log_stats = {"error": "unavailable"}
+
+        return {
+            "status": "healthy" if db_ok else "degraded",
+            "components": {
+                "database": "ok" if db_ok else "error",
+                "keitaro": keitaro_monitor.status,
+                "telegram_logs": "enabled" if ENABLE_TELEGRAM_LOGS else "disabled",
+                "rate_limiter_tokens": round(keitaro_rate_limiter.available_tokens, 1),
+            },
+            "queue": queue_stats,
+            "log_stats_24h": log_stats,
+            "user_stats": stats,
+        }
+
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @router.get("/logs")
 async def get_logs(
     limit: int = Query(50, ge=1, le=500),
