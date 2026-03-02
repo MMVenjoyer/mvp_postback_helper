@@ -6,11 +6,15 @@ import asyncio
 from postback_router import router as postback_router
 from resolver_router import router as resolver_router
 from miniapp_router import router as miniapp_router
-from report_router import router as report_router          # NEW: отчёты воронки
+from report_router import router as report_router
+from monitor_router import router as monitor_router
 from keytaro import startup_event, shutdown_event, campaign_router
 from db import DataBase
 from logger_bot import close_bot, send_success_log
 from api_request import close_http_session
+from service_logger import slog
+from postback_queue import postback_queue
+from service_monitor import keitaro_monitor
 from config import ENABLE_TELEGRAM_LOGS
 
 # Глобальный экземпляр БД для graceful shutdown
@@ -24,10 +28,12 @@ async def lifespan(app: FastAPI):
     """
     global db_instance
 
-    # Startup
+    # ==========================================
+    # STARTUP
+    # ==========================================
     print("🚀 Запуск приложения...")
 
-    # Создаем экземпляр БД для проверки соединения
+    # 1. Создаем экземпляр БД для проверки соединения
     try:
         db_instance = DataBase()
         print("✓ Connection pool инициализирован")
@@ -35,18 +41,23 @@ async def lifespan(app: FastAPI):
         print(f"✗ Ошибка инициализации БД: {e}")
         raise
 
-    # Запускаем фоновый сервис синхронизации кампаний
+    # 2. Запускаем фоновые воркеры
+    slog.start_worker()
+    postback_queue.start_worker()
+    keitaro_monitor.start_worker()
+
+    # 3. Запускаем фоновый сервис синхронизации кампаний (если нужно)
     # asyncio.create_task(startup_event())
 
-    # Отправляем уведомление о старте в Telegram (если включено)
+    # 4. Отправляем уведомление о старте в Telegram
     if ENABLE_TELEGRAM_LOGS:
         try:
             await send_success_log(
                 log_type="SERVICE_STARTED",
                 message="✅ Сервис Keitaro Postback успешно запущен",
                 additional_info={
-                    "version": "2.3.0",
-                    "features": "Postbacks + Telegram Logger + MiniApp Tracker + Parallel Sends + Funnel Reports"
+                    "version": "2.6.0",
+                    "features": "Postbacks + Telegram Logger + MiniApp + Parallel Sends + Reports + Monitoring + Queue + Promo"
                 }
             )
         except Exception as e:
@@ -55,10 +66,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # ==========================================
+    # SHUTDOWN
+    # ==========================================
     print("🛑 Остановка приложения...")
 
-    # Отправляем уведомление о завершении в Telegram (если включено)
+    # Отправляем уведомление о завершении в Telegram
     if ENABLE_TELEGRAM_LOGS:
         try:
             await send_success_log(
@@ -72,9 +85,15 @@ async def lifespan(app: FastAPI):
             print(
                 f"⚠️ Не удалось отправить уведомление о завершении в Telegram: {e}")
 
+    # Останавливаем кампанийный сервис
     await shutdown_event()
 
-    # Закрываем shared HTTP сессию (v2.2)
+    # Останавливаем фоновые воркеры (в обратном порядке)
+    await keitaro_monitor.stop_worker()
+    await postback_queue.stop_worker()
+    await slog.stop_worker()
+
+    # Закрываем shared HTTP сессию
     await close_http_session()
 
     # Закрываем все соединения с БД
@@ -88,16 +107,16 @@ async def lifespan(app: FastAPI):
 
 # Создаем FastAPI приложение с lifespan
 app = FastAPI(
-    title="Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp + Reports",
-    description="Сервис для резолва диплинков, интеграции с Keitaro, автоматической отправки логов ошибок в Telegram, трекинга Mini App и отчётов воронки",
-    version="2.3.0",
+    title="Deeplink Service + Keitaro Integration + Monitoring v2.6",
+    description="Сервис для резолва диплинков, интеграции с Keitaro, логирования, мониторинга, очереди retry и отчётов воронки",
+    version="2.6.0",
     lifespan=lifespan
 )
 
 # CORS для Mini App (если будет на другом домене)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В проде лучше указать конкретные домены
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,13 +127,14 @@ app.include_router(postback_router, prefix="/postback", tags=["postbacks"])
 app.include_router(resolver_router, prefix="/resolve", tags=["resolver"])
 app.include_router(campaign_router, prefix="/api", tags=["campaigns"])
 app.include_router(miniapp_router, prefix="/api", tags=["miniapp"])
-app.include_router(report_router, prefix="/api/report", tags=["reports"])  # NEW
+app.include_router(report_router, prefix="/api/report", tags=["reports"])
+app.include_router(monitor_router, prefix="/api/monitor", tags=["monitoring"])
 
 
 @app.get("/", tags=["main"])
 async def root():
     return {
-        "message": "Deeplink Service + Keitaro Integration + Telegram Logger + MiniApp + Reports v2.3",
+        "message": "Deeplink Service + Keitaro Integration v2.6",
         "features": [
             "Резолв UUID из диплинков",
             "Постбэки от Keitaro",
@@ -125,14 +145,20 @@ async def root():
             "Трекинг открытий Mini App калькулятора",
             "Параллельная отправка постбэков (v2.2)",
             "Shared HTTP session (v2.2)",
-            "4 воркера uvicorn (v2.2)",
-            "🆕 Отчёты воронки: когортный + некогортный (v2.3)"
+            "Отчёты воронки: когортный + некогортный (v2.3)",
+            "🆕 Service Logger + Postback Queue + Health Monitor (v2.6)",
+            "🆕 Promo в dep/redep + transactions (v2.6)",
+            "🆕 Monitoring API /api/monitor/* (v2.6)",
         ],
         "endpoints": {
             "miniapp_track": "POST /api/get_miniapp",
             "miniapp_stats": "GET /api/calc_stats",
             "funnel_report": "GET /api/report/funnel?type=cohort&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD",
-            "funnel_summary": "GET /api/report/funnel/summary?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD"
+            "funnel_summary": "GET /api/report/funnel/summary?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD",
+            "monitor_health": "GET /api/monitor/health",
+            "monitor_logs": "GET /api/monitor/logs",
+            "monitor_queue": "GET /api/monitor/queue",
+            "monitor_keitaro": "GET /api/monitor/keitaro",
         }
     }
 
@@ -152,6 +178,7 @@ async def health_check():
             "database": "connected",
             "connection_type": "pooled",
             "telegram_logs": "enabled" if ENABLE_TELEGRAM_LOGS else "disabled",
+            "keitaro_healthy": keitaro_monitor.is_healthy,
             "stats": stats,
             "calc_stats": calc_stats
         }

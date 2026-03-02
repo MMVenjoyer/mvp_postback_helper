@@ -387,6 +387,7 @@ class DataBase:
         action: str,
         sum_amount: float = None,
         commission: float = None,
+        promo: str = None,
         raw_data: dict = None
     ) -> Dict[str, Any]:
         """
@@ -397,20 +398,22 @@ class DataBase:
             action: Тип действия (ftm, reg, dep, redep, revenue)
             sum_amount: Сумма депозита (опционально)
             commission: Комиссия (опционально, для dep/redep)
+            promo: Промокод (опционально, для dep/redep)
             raw_data: Сырые данные запроса
         """
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        INSERT INTO transactions (user_id, action, sum, commission, raw_data)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO transactions (user_id, action, sum, commission, promo, raw_data)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         RETURNING id, created_at
                     """, (
                         user_id,
                         action,
                         sum_amount,
                         commission,
+                        promo,
                         json.dumps(raw_data) if raw_data else None
                     ))
 
@@ -419,7 +422,7 @@ class DataBase:
                     created_at = result[1]
 
                     print(
-                        f"[DB] ✓ Создана транзакция #{transaction_id}: user={user_id}, action={action}, sum={sum_amount}, commission={commission}")
+                        f"[DB] ✓ Создана транзакция #{transaction_id}: user={user_id}, action={action}, sum={sum_amount}, commission={commission}, promo={promo}")
 
                     return {
                         "success": True,
@@ -490,6 +493,7 @@ class DataBase:
         action: str,
         sum_amount: float = None,
         commission: float = None,
+        promo: str = None,
         raw_data: dict = None
     ) -> Dict[str, Any]:
         """
@@ -500,6 +504,7 @@ class DataBase:
             action: Тип действия
             sum_amount: Сумма (опционально)
             commission: Комиссия (опционально)
+            promo: Промокод (опционально)
             raw_data: Сырые данные
         """
         try:
@@ -509,6 +514,7 @@ class DataBase:
                 action=action,
                 sum_amount=sum_amount,
                 commission=commission,
+                promo=promo,
                 raw_data=raw_data
             )
 
@@ -594,7 +600,7 @@ class DataBase:
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                     cursor.execute("""
-                        SELECT id, action, sum, commission, created_at, raw_data
+                        SELECT id, action, sum, commission, promo, created_at, raw_data
                         FROM transactions
                         WHERE user_id = %s
                         ORDER BY created_at DESC
@@ -1263,16 +1269,6 @@ class DataBase:
     ) -> bool:
         """
         Проверяет наличие дублирующей транзакции в заданном временном окне.
-        Помогает избежать дублей при повторных запросах.
-
-        Args:
-            user_id: ID пользователя
-            action: Тип действия (ftm, reg, dep, redep, revenue)
-            sum_amount: Сумма (для dep/redep/revenue)
-            time_window_seconds: Временное окно в секундах
-
-        Returns:
-            True если дубликат найден, False если нет
         """
         try:
             with self.get_connection() as conn:
@@ -1320,23 +1316,12 @@ class DataBase:
         """
         Обновляет timestamp открытия калькулятора для пользователя.
         Если пользователя нет - создаёт его.
-
-        Args:
-            user_id: Telegram ID пользователя
-            username: Username в Telegram
-            first_name: Имя
-            last_name: Фамилия
-            language_code: Код языка
-
-        Returns:
-            Dict с результатом операции
         """
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     now = datetime.now(timezone.utc)
 
-                    # Проверяем существование пользователя
                     cursor.execute(
                         "SELECT id, is_open_calc FROM users WHERE id = %s",
                         (user_id,)
@@ -1344,7 +1329,6 @@ class DataBase:
                     existing = cursor.fetchone()
 
                     if existing:
-                        # Пользователь существует - обновляем timestamp
                         cursor.execute("""
                             UPDATE users 
                             SET is_open_calc = %s
@@ -1361,7 +1345,6 @@ class DataBase:
                             "previous_open": existing[1].isoformat() if existing[1] else None
                         }
                     else:
-                        # Пользователя нет - создаём с минимальными данными
                         cursor.execute("""
                             INSERT INTO users (id, is_open_calc, created_at)
                             VALUES (%s, %s, %s)
@@ -1392,28 +1375,24 @@ class DataBase:
                 with conn.cursor() as cursor:
                     stats = {}
 
-                    # Всего открывших калькулятор
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
                         WHERE is_open_calc IS NOT NULL
                     """)
                     stats['total_opened'] = cursor.fetchone()[0]
 
-                    # Открыли сегодня
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
                         WHERE is_open_calc::date = CURRENT_DATE
                     """)
                     stats['opened_today'] = cursor.fetchone()[0]
 
-                    # Открыли за последние 7 дней
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
                         WHERE is_open_calc > NOW() - INTERVAL '7 days'
                     """)
                     stats['opened_last_7_days'] = cursor.fetchone()[0]
 
-                    # Последние 10 открытий
                     cursor.execute("""
                         SELECT id, is_open_calc 
                         FROM users 
@@ -1441,13 +1420,6 @@ class DataBase:
         """
         Обновляет актуальную выручку пользователя.
         Перезаписывает значение на новое (не суммирует).
-
-        Args:
-            user_id: ID пользователя
-            revenue: Актуальная сумма выручки
-
-        Returns:
-            Dict с результатом операции
         """
         try:
             with self.get_connection() as conn:
@@ -1507,13 +1479,6 @@ class DataBase:
         """
         Обновляет менеджера пользователя.
         ВСЕГДА перезаписывает (менеджер может меняться).
-
-        Args:
-            user_id: ID пользователя
-            manager: Имя/номер менеджера (manager1, manager2, ...)
-
-        Returns:
-            Dict с результатом операции
         """
         try:
             with self.get_connection() as conn:
@@ -1542,13 +1507,6 @@ class DataBase:
         """
         Обновляет промокод пользователя.
         Перезаписывает при каждом вызове (последний актуальный).
-        
-        Args:
-            user_id: ID пользователя
-            promo: Промокод
-        
-        Returns:
-            Dict с результатом
         """
         try:
             with self.get_connection() as conn:
@@ -1568,7 +1526,6 @@ class DataBase:
             print(f"[DB] ✗ Ошибка обновления promo: {e}")
             return {"success": False, "error": str(e)}
 
-
     def get_user_promo(self, user_id: int):
         """Получает промокод пользователя"""
         try:
@@ -1583,19 +1540,12 @@ class DataBase:
             print(f"[DB] Ошибка получения promo: {e}")
             return None
 
-
     # ----- SERVICE LOGS -----
 
     def get_service_logs(self, limit: int = 100, level: str = None, 
                         category: str = None, hours: int = 24):
         """
         Получает последние логи сервиса.
-        
-        Args:
-            limit: Макс количество записей
-            level: Фильтр по уровню (ERROR, WARNING, etc.)
-            category: Фильтр по категории (KEITARO, CHATTERFY, etc.)
-            hours: За последние N часов
         """
         try:
             with self.get_connection() as conn:
@@ -1638,7 +1588,6 @@ class DataBase:
             print(f"[DB] Ошибка получения логов: {e}")
             return []
 
-
     def get_service_log_stats(self, hours: int = 24):
         """Статистика по логам за последние N часов"""
         try:
@@ -1646,7 +1595,6 @@ class DataBase:
                 with conn.cursor() as cursor:
                     stats = {}
                     
-                    # По уровням
                     cursor.execute("""
                         SELECT level, COUNT(*) FROM service_logs
                         WHERE created_at > NOW() - INTERVAL '%s hours'
@@ -1654,7 +1602,6 @@ class DataBase:
                     """, (hours,))
                     stats["by_level"] = {r[0]: r[1] for r in cursor.fetchall()}
                     
-                    # По категориям
                     cursor.execute("""
                         SELECT category, COUNT(*) FROM service_logs
                         WHERE created_at > NOW() - INTERVAL '%s hours'
@@ -1662,7 +1609,6 @@ class DataBase:
                     """, (hours,))
                     stats["by_category"] = {r[0]: r[1] for r in cursor.fetchall()}
                     
-                    # Топ ошибок
                     cursor.execute("""
                         SELECT category, event_type, COUNT(*), 
                             MAX(created_at) as last_seen
@@ -1678,7 +1624,6 @@ class DataBase:
                         "count": r[2], "last_seen": r[3].isoformat() if r[3] else None,
                     } for r in cursor.fetchall()]
                     
-                    # Средний response time Keitaro
                     cursor.execute("""
                         SELECT AVG(duration_ms), MAX(duration_ms), MIN(duration_ms),
                             COUNT(*) FILTER (WHERE event_type = 'TIMEOUT')
@@ -1696,7 +1641,6 @@ class DataBase:
                             "timeout_count": row[3] or 0,
                         }
                     
-                    # По часам (для графиков)
                     cursor.execute("""
                         SELECT date_trunc('hour', created_at) as hour,
                             COUNT(*) FILTER (WHERE level = 'ERROR') as errors,
@@ -1716,7 +1660,6 @@ class DataBase:
         except Exception as e:
             print(f"[DB] Ошибка получения статистики логов: {e}")
             return {"error": str(e)}
-
 
     def cleanup_old_logs(self, days: int = 30):
         """Удаляет логи старше N дней"""
@@ -1751,7 +1694,6 @@ class DataBase:
         except Exception as e:
             print(f"[DB] Ошибка cleanup: {e}")
             return {"error": str(e)}
-
 
     def get_health_check_history(self, target: str = "keitaro", hours: int = 24, limit: int = 100):
         """История health checks"""
@@ -1804,7 +1746,6 @@ class DataBase:
                 with conn.cursor() as cursor:
                     stats = {}
 
-                    # Распределение по менеджерам
                     cursor.execute("""
                         SELECT manager, COUNT(*) as count
                         FROM users 
@@ -1817,19 +1758,16 @@ class DataBase:
                         {"manager": row[0], "count": row[1]} for row in manager_dist
                     ]
 
-                    # Всего с менеджером
                     cursor.execute("""
                         SELECT COUNT(*) FROM users WHERE manager IS NOT NULL
                     """)
                     stats['total_with_manager'] = cursor.fetchone()[0]
 
-                    # Без менеджера
                     cursor.execute("""
                         SELECT COUNT(*) FROM users WHERE manager IS NULL
                     """)
                     stats['total_without_manager'] = cursor.fetchone()[0]
 
-                    # Менеджеры с депозитами
                     cursor.execute("""
                         SELECT u.manager, COUNT(*) as deps, COALESCE(SUM(t.sum), 0) as total_sum
                         FROM users u
@@ -1859,35 +1797,30 @@ class DataBase:
                 with conn.cursor() as cursor:
                     stats = {}
 
-                    # Всего пользователей с выручкой
                     cursor.execute("""
                         SELECT COUNT(*) FROM users 
                         WHERE revenue IS NOT NULL AND revenue > 0
                     """)
                     stats['users_with_revenue'] = cursor.fetchone()[0]
 
-                    # Общая сумма выручки
                     cursor.execute("""
                         SELECT COALESCE(SUM(revenue), 0) FROM users 
                         WHERE revenue IS NOT NULL
                     """)
                     stats['total_revenue'] = float(cursor.fetchone()[0])
 
-                    # Средняя выручка
                     cursor.execute("""
                         SELECT COALESCE(AVG(revenue), 0) FROM users 
                         WHERE revenue IS NOT NULL AND revenue > 0
                     """)
                     stats['average_revenue'] = round(float(cursor.fetchone()[0]), 2)
 
-                    # Максимальная выручка
                     cursor.execute("""
                         SELECT COALESCE(MAX(revenue), 0) FROM users 
                         WHERE revenue IS NOT NULL
                     """)
                     stats['max_revenue'] = float(cursor.fetchone()[0])
 
-                    # Топ 10 по выручке
                     cursor.execute("""
                         SELECT id, revenue 
                         FROM users 
@@ -1901,7 +1834,6 @@ class DataBase:
                         for row in top_users
                     ]
 
-                    # Количество revenue транзакций
                     cursor.execute("""
                         SELECT COUNT(*) FROM transactions 
                         WHERE action = 'revenue'

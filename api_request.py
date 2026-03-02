@@ -247,9 +247,12 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
     Постбэк в Keitaro
     URL: https://ytgtech.com/e87f58c/postback?subid=XXX&status=ftm&payout=100&tid=4
     
-    v2.5: Использует _keitaro_semaphore + shared session
+    v2.6: Проверяет health monitor, при недоступности — в очередь.
+          При фейле всех retry — тоже в очередь.
     """
     from config import KEITARO_POSTBACK_URL
+    from service_monitor import keitaro_monitor
+    from postback_queue import postback_queue
 
     params = {
         "subid": subid,
@@ -262,6 +265,29 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
     if tid is not None:
         params["tid"] = tid
 
+    full_url = f"{KEITARO_POSTBACK_URL}?{urlencode(params)}"
+
+    # v2.6: Если Keitaro недоступен — сразу в очередь
+    if not keitaro_monitor.is_healthy:
+        print(f"[HTTP] ⚠️ Keitaro unhealthy, постбэк в очередь: user={user_id}, status={status}")
+        postback_queue.enqueue(
+            target="keitaro",
+            action=status,
+            user_id=user_id or 0,
+            payload={"subid": subid, "status": status, "payout": payout, "tid": tid},
+            last_error="Keitaro unhealthy (health monitor)"
+        )
+        return {
+            "ok": False,
+            "text": "Queued - Keitaro unhealthy",
+            "attempt": 0,
+            "error_type": "QUEUED",
+            "timestamp": datetime.now(timezone.utc).strftime('%H:%M:%S UTC'),
+            "duration": 0,
+            "full_url": full_url,
+            "postback_type": f"Keitaro {status.upper()}"
+        }
+
     result = await fetch_with_retry(
         KEITARO_POSTBACK_URL,
         params=params,
@@ -271,7 +297,7 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
         postback_type=f"Keitaro_{status.upper()}",
         user_id=user_id,
         semaphore=_keitaro_semaphore,
-        use_shared_session_first=True,  # Keitaro — через shared (Cloudflare keepalive)
+        use_shared_session_first=True,
         timeout_total=15,
     )
     result["postback_type"] = f"Keitaro {status.upper()}"
@@ -281,6 +307,14 @@ async def send_keitaro_postback(subid: str, status: str, payout: float = None, t
         print(f"Результат: ✓ OK")
     else:
         print(f"Результат: ✗ FAIL - {result.get('text')}")
+        # v2.6: Все retry провалились — в очередь
+        postback_queue.enqueue(
+            target="keitaro",
+            action=status,
+            user_id=user_id or 0,
+            payload={"subid": subid, "status": status, "payout": payout, "tid": tid},
+            last_error=result.get("text", "Unknown error after retries")
+        )
 
     return result
 
@@ -297,9 +331,10 @@ async def send_chatterfy_postback(
     """
     Постбэк в Chatterfy для отправки информации о депозитах
 
-    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session на каждую попытку
+    v2.6: При фейле всех retry — в очередь
     """
     from config import CHATTERFY_POSTBACK_URL
+    from postback_queue import postback_queue
 
     event_type = "pb_redep" if is_redep else "sumdep"
 
@@ -320,8 +355,8 @@ async def send_chatterfy_postback(
         postback_type=f"Chatterfy_{event_type.upper()}",
         user_id=user_id,
         semaphore=_chatterfy_semaphore,
-        use_shared_session_first=False,  # Chatterfy — всегда fresh (другой CDN/keepalive)
-        timeout_total=20,                # Chatterfy медленнее — даём 20с
+        use_shared_session_first=False,
+        timeout_total=20,
     )
     result["postback_type"] = f"Chatterfy {event_type.upper()}"
 
@@ -330,6 +365,20 @@ async def send_chatterfy_postback(
         print(f"Результат: ✓ OK")
     else:
         print(f"Результат: ✗ FAIL - {result.get('text')}")
+        # v2.6: В очередь при фейле
+        postback_queue.enqueue(
+            target="chatterfy",
+            action=event_type,
+            user_id=user_id or 0,
+            payload={
+                "event": event_type,
+                "clickid": clickid,
+                "sumdep": sumdep,
+                "previous_dep": previous_dep,
+                "is_redep": is_redep,
+            },
+            last_error=result.get("text", "Unknown error after retries")
+        )
 
     return result
 
@@ -344,9 +393,10 @@ async def send_chatterfy_withdraw_postback(
     """
     Постбэк в Chatterfy для отправки информации о выводе средств
 
-    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session
+    v2.6: При фейле — в очередь
     """
     from config import CHATTERFY_POSTBACK_URL
+    from postback_queue import postback_queue
 
     params = {
         "tracker.event": "withdraw",
@@ -373,6 +423,18 @@ async def send_chatterfy_withdraw_postback(
         print(f"Результат: ✓ OK")
     else:
         print(f"Результат: ✗ FAIL - {result.get('text')}")
+        # v2.6: В очередь при фейле
+        postback_queue.enqueue(
+            target="chatterfy",
+            action="withdraw",
+            user_id=user_id or 0,
+            payload={
+                "event": "withdraw",
+                "clickid": clickid,
+                "withdraw_amount": withdraw_amount,
+            },
+            last_error=result.get("text", "Unknown error after retries")
+        )
 
     return result
 
@@ -407,9 +469,10 @@ async def send_chatterfy_ftm_postback(
     """
     Постбэк в Chatterfy при событии FTM (First Time Message)
 
-    v2.5: retries 2→3, delay 5→3, отдельный семафор, fresh session
+    v2.6: При фейле — в очередь
     """
     from config import CHATTERFY_POSTBACK_URL
+    from postback_queue import postback_queue
 
     source = determine_source_from_company(company)
     company_value = company if (company and company.strip() and company != "None") else "direct"
@@ -443,5 +506,17 @@ async def send_chatterfy_ftm_postback(
         print(f"Результат: ✓ OK")
     else:
         print(f"Результат: ✗ FAIL - {result.get('text')}")
+        # v2.6: В очередь при фейле
+        postback_queue.enqueue(
+            target="chatterfy",
+            action="ftm",
+            user_id=user_id or 0,
+            payload={
+                "event": "new_postback_event_7",
+                "clickid": clickid,
+                "company": company_value,
+            },
+            last_error=result.get("text", "Unknown error after retries")
+        )
 
     return result
