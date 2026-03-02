@@ -1538,6 +1538,242 @@ class DataBase:
             print(f"[DB] ✗ Ошибка обновления manager: {e}")
             return {"success": False, "error": str(e)}
 
+    def update_user_promo(self, user_id: int, promo: str) -> dict:
+        """
+        Обновляет промокод пользователя.
+        Перезаписывает при каждом вызове (последний актуальный).
+        
+        Args:
+            user_id: ID пользователя
+            promo: Промокод
+        
+        Returns:
+            Dict с результатом
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE users SET promo = %s WHERE id = %s
+                        RETURNING promo
+                    """, (promo, user_id))
+                    
+                    result = cursor.fetchone()
+                    if result:
+                        print(f"[DB] ✓ Обновлен promo для user {user_id}: {promo}")
+                        return {"success": True, "updated": True, "promo": promo}
+                    else:
+                        return {"success": False, "error": "User not found"}
+        except Exception as e:
+            print(f"[DB] ✗ Ошибка обновления promo: {e}")
+            return {"success": False, "error": str(e)}
+
+
+    def get_user_promo(self, user_id: int):
+        """Получает промокод пользователя"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT promo FROM users WHERE id = %s", (user_id,))
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        return result[0]
+                    return None
+        except Exception as e:
+            print(f"[DB] Ошибка получения promo: {e}")
+            return None
+
+
+    # ----- SERVICE LOGS -----
+
+    def get_service_logs(self, limit: int = 100, level: str = None, 
+                        category: str = None, hours: int = 24):
+        """
+        Получает последние логи сервиса.
+        
+        Args:
+            limit: Макс количество записей
+            level: Фильтр по уровню (ERROR, WARNING, etc.)
+            category: Фильтр по категории (KEITARO, CHATTERFY, etc.)
+            hours: За последние N часов
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    conditions = ["created_at > NOW() - INTERVAL '%s hours'"]
+                    params = [hours]
+                    
+                    if level:
+                        conditions.append("level = %s")
+                        params.append(level)
+                    if category:
+                        conditions.append("category = %s")
+                        params.append(category)
+                    
+                    params.append(limit)
+                    
+                    query = f"""
+                        SELECT id, level, category, event_type, message, user_id, 
+                            endpoint, request_url, response_status, duration_ms,
+                            attempt, created_at
+                        FROM service_logs
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """
+                    
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
+                    
+                    return [{
+                        "id": r[0], "level": r[1], "category": r[2],
+                        "event_type": r[3], "message": r[4], "user_id": r[5],
+                        "endpoint": r[6], "request_url": r[7],
+                        "response_status": r[8], "duration_ms": r[9],
+                        "attempt": r[10],
+                        "created_at": r[11].isoformat() if r[11] else None,
+                    } for r in rows]
+                    
+        except Exception as e:
+            print(f"[DB] Ошибка получения логов: {e}")
+            return []
+
+
+    def get_service_log_stats(self, hours: int = 24):
+        """Статистика по логам за последние N часов"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    stats = {}
+                    
+                    # По уровням
+                    cursor.execute("""
+                        SELECT level, COUNT(*) FROM service_logs
+                        WHERE created_at > NOW() - INTERVAL '%s hours'
+                        GROUP BY level ORDER BY COUNT(*) DESC
+                    """, (hours,))
+                    stats["by_level"] = {r[0]: r[1] for r in cursor.fetchall()}
+                    
+                    # По категориям
+                    cursor.execute("""
+                        SELECT category, COUNT(*) FROM service_logs
+                        WHERE created_at > NOW() - INTERVAL '%s hours'
+                        GROUP BY category ORDER BY COUNT(*) DESC
+                    """, (hours,))
+                    stats["by_category"] = {r[0]: r[1] for r in cursor.fetchall()}
+                    
+                    # Топ ошибок
+                    cursor.execute("""
+                        SELECT category, event_type, COUNT(*), 
+                            MAX(created_at) as last_seen
+                        FROM service_logs
+                        WHERE level IN ('ERROR', 'CRITICAL')
+                        AND created_at > NOW() - INTERVAL '%s hours'
+                        GROUP BY category, event_type
+                        ORDER BY COUNT(*) DESC
+                        LIMIT 10
+                    """, (hours,))
+                    stats["top_errors"] = [{
+                        "category": r[0], "event_type": r[1], 
+                        "count": r[2], "last_seen": r[3].isoformat() if r[3] else None,
+                    } for r in cursor.fetchall()]
+                    
+                    # Средний response time Keitaro
+                    cursor.execute("""
+                        SELECT AVG(duration_ms), MAX(duration_ms), MIN(duration_ms),
+                            COUNT(*) FILTER (WHERE event_type = 'TIMEOUT')
+                        FROM service_logs
+                        WHERE category = 'KEITARO'
+                        AND duration_ms IS NOT NULL
+                        AND created_at > NOW() - INTERVAL '%s hours'
+                    """, (hours,))
+                    row = cursor.fetchone()
+                    if row:
+                        stats["keitaro_latency"] = {
+                            "avg_ms": round(float(row[0]), 1) if row[0] else None,
+                            "max_ms": int(row[1]) if row[1] else None,
+                            "min_ms": int(row[2]) if row[2] else None,
+                            "timeout_count": row[3] or 0,
+                        }
+                    
+                    # По часам (для графиков)
+                    cursor.execute("""
+                        SELECT date_trunc('hour', created_at) as hour,
+                            COUNT(*) FILTER (WHERE level = 'ERROR') as errors,
+                            COUNT(*) FILTER (WHERE level = 'WARNING') as warnings,
+                            COUNT(*) as total
+                        FROM service_logs
+                        WHERE created_at > NOW() - INTERVAL '%s hours'
+                        GROUP BY hour ORDER BY hour
+                    """, (hours,))
+                    stats["by_hour"] = [{
+                        "hour": r[0].isoformat() if r[0] else None,
+                        "errors": r[1], "warnings": r[2], "total": r[3],
+                    } for r in cursor.fetchall()]
+                    
+                    return stats
+                    
+        except Exception as e:
+            print(f"[DB] Ошибка получения статистики логов: {e}")
+            return {"error": str(e)}
+
+
+    def cleanup_old_logs(self, days: int = 30):
+        """Удаляет логи старше N дней"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        DELETE FROM service_logs 
+                        WHERE created_at < NOW() - INTERVAL '%s days'
+                    """, (days,))
+                    deleted_logs = cursor.rowcount
+                    
+                    cursor.execute("""
+                        DELETE FROM health_checks 
+                        WHERE created_at < NOW() - INTERVAL '7 days'
+                    """, ())
+                    deleted_checks = cursor.rowcount
+                    
+                    cursor.execute("""
+                        DELETE FROM postback_queue 
+                        WHERE status IN ('completed', 'failed')
+                        AND created_at < NOW() - INTERVAL '%s days'
+                    """, (days,))
+                    deleted_queue = cursor.rowcount
+                    
+                    print(f"[DB] ✓ Cleanup: {deleted_logs} logs, {deleted_checks} health checks, {deleted_queue} queue items")
+                    return {
+                        "deleted_logs": deleted_logs,
+                        "deleted_health_checks": deleted_checks,
+                        "deleted_queue_items": deleted_queue,
+                    }
+        except Exception as e:
+            print(f"[DB] Ошибка cleanup: {e}")
+            return {"error": str(e)}
+
+
+    def get_health_check_history(self, target: str = "keitaro", hours: int = 24, limit: int = 100):
+        """История health checks"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT status, response_ms, http_status, error_message, created_at
+                        FROM health_checks
+                        WHERE target = %s AND created_at > NOW() - INTERVAL '%s hours'
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """, (target, hours, limit))
+                    
+                    return [{
+                        "status": r[0], "response_ms": r[1],
+                        "http_status": r[2], "error": r[3],
+                        "created_at": r[4].isoformat() if r[4] else None,
+                    } for r in cursor.fetchall()]
+        except Exception as e:
+            return []
+
     def get_user_manager(self, user_id: int) -> Optional[str]:
         """
         Получает менеджера пользователя из БД

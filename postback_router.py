@@ -635,45 +635,34 @@ async def dep_postback(
     sum: str = Query(None, description="Deposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)"),
-    trader_id: str = Query(
-        None, description="Trader ID (for search and update)")
+    subscriber_id: str = Query(None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(None, description="Trader ID (for search and update)"),
+    promo: str = Query(None, description="Promo code (optional)"),       # <-- NEW v2.6
 ):
     """
     Депозит пользователя (первый депозит)
-    Отправляет событие SALE в Keitaro и постбэк в Chatterfy с суммой депозитов (event: sumdep)
-
-    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
-    
-    v2.2: Chatterfy DEP + Keitaro SALE отправляются параллельно
-    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
+    v2.6: + promo field + service logging
     """
-    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
-    id = parse_id_parameter(id)
+    from service_logger import slog
 
-    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    id = parse_id_parameter(id)
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
     subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+    promo = sanitize_identifier(promo, "promo") if promo else None       # <-- NEW v2.6
 
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
-    print(
-        f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
-    print(
-        f"[POSTBACK DEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
+    print(f"[POSTBACK DEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}, promo: {promo}")
+    print(f"[POSTBACK DEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
 
     if not id and not subscriber_id and not clickid and not trader_id:
-        return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
+        return {"status": "error", "error": "At least one identifier required"}
 
     try:
         actual_user_id = await find_user_for_deposit(
-            user_id=id,
-            subscriber_id=subscriber_id,
-            clickid=clickid,
-            trader_id=trader_id
+            user_id=id, subscriber_id=subscriber_id, clickid=clickid, trader_id=trader_id
         )
 
         user_created = False
@@ -681,44 +670,33 @@ async def dep_postback(
 
         if not actual_user_id and id:
             user_result = await ensure_user_and_update_clickid(
-                user_id=id,
-                subscriber_id=subscriber_id,
-                trader_id=trader_id,
-                clickid=clickid
+                user_id=id, subscriber_id=subscriber_id, trader_id=trader_id, clickid=clickid
             )
             if user_result.get("success"):
                 actual_user_id = id
                 user_created = user_result.get("created", False)
-                print(f"[POSTBACK DEP] ✓ Создан новый пользователь {id}")
 
         if not actual_user_id:
             error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
-            print(f"[POSTBACK DEP] ✗ {error_msg}")
+            await slog.warning("POSTBACK", "DEP_USER_NOT_FOUND", error_msg)
             return {"status": "error", "error": error_msg}
 
-        print(f"[POSTBACK DEP] Найден пользователь: {actual_user_id}")
-
-        # Обновляем clickid если передан
         if clickid:
             db.update_user_clickid(actual_user_id, clickid)
 
-        # ВАЖНО: Обновляем trader_id если передан (юзер мог зарегать новый аккаунт)
+        # NEW v2.6: Обновляем promo если передан
+        if promo:
+            db.update_user_promo(actual_user_id, promo)
+
         if trader_id and not user_created:
             trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
 
         if db.check_duplicate_transaction(actual_user_id, "dep", sum_amount=sum_value, time_window_seconds=60):
-            print(
-                f"[POSTBACK DEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
-            return {
-                "status": "duplicate",
-                "user_id": actual_user_id,
-                "message": "Transaction already processed within last 60 seconds"
-            }
+            await slog.info("POSTBACK", "DEP_DUPLICATE", f"Дубликат dep для user {actual_user_id}", user_id=actual_user_id)
+            return {"status": "duplicate", "user_id": actual_user_id, "message": "Transaction already processed within last 60 seconds"}
 
         previous_deposits = db.get_user_deposits_count(actual_user_id)
         tid_value = 6 + previous_deposits
-        print(
-            f"[POSTBACK DEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
         result = db.process_postback(
             user_id=actual_user_id,
@@ -726,91 +704,48 @@ async def dep_postback(
             sum_amount=sum_value,
             commission=commission_value,
             raw_data={
-                "id": id,
-                "subscriber_id": subscriber_id,
-                "clickid": clickid,
-                "trader_id": trader_id,
-                "action": "dep",
-                "sum": sum_value,
-                "commission": commission_value,
-                "tid": tid_value,
-                "user_created": user_created,
+                "id": id, "subscriber_id": subscriber_id, "clickid": clickid,
+                "trader_id": trader_id, "promo": promo,                          # <-- promo in raw_data
+                "action": "dep", "sum": sum_value, "commission": commission_value,
+                "tid": tid_value, "user_created": user_created,
                 "trader_id_updated": trader_id_update_info.get("updated", False),
-                "old_trader_id": trader_id_update_info.get("old_trader_id")
             }
         )
 
         if not result.get("success"):
             error_msg = result.get('error', 'Unknown error')
-            print(f"[POSTBACK DEP] ✗ Ошибка записи в БД: {error_msg}")
-
-            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
-                await send_error_log(
-                    error_type="POSTBACK_DB_ERROR",
-                    error_message=f"Ошибка записи DEP в БД: {error_msg}",
-                    user_id=actual_user_id,
-                    additional_info={"action": "dep", "sum": sum_value, "commission": commission_value,
-                                     "tid": tid_value, "clickid": clickid, "endpoint": "/postback/dep"},
-                    full_traceback=True
-                )
-
+            await slog.log_postback_event("dep", actual_user_id, False, "/postback/dep", error_msg=error_msg)
             return {"status": "error", "error": error_msg}
 
-        print(
-            f"[POSTBACK DEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
+        # Логируем успех
+        await slog.log_postback_event("dep", actual_user_id, True, "/postback/dep",
+                                      extra={"sum": sum_value, "tid": tid_value, "promo": promo})
 
         subid = db.get_user_sub_id(actual_user_id)
         user_clickid = db.get_user_clickid(actual_user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(actual_user_id)
-        print(
-            f"[POSTBACK DEP] Общая сумма депозитов после записи: {total_deposits_sum}")
-
-        # ========================================
-        # Параллельная отправка постбэков (v2.2)
-        # ========================================
-        if user_clickid:
-            print(
-                f"[POSTBACK DEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=sumdep")
-        else:
-            print(
-                f"[POSTBACK DEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
-
-        if subid:
-            print(
-                f"[POSTBACK DEP] Отправляем постбэк SALE в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
-        else:
-            print(
-                f"[POSTBACK DEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
 
         postback_results = await send_postbacks_parallel(
             chatterfy=send_chatterfy_postback(
-                clickid=user_clickid,
-                sumdep=total_deposits_sum,
-                previous_dep=sum_value,
-                is_redep=False,  # DEP использует event "sumdep"
-                user_id=actual_user_id
+                clickid=user_clickid, sumdep=total_deposits_sum,
+                previous_dep=sum_value, is_redep=False, user_id=actual_user_id
             ) if user_clickid else None,
             keitaro=send_keitaro_postback(
-                subid=subid,
-                status="sale",
-                payout=sum_value,
-                tid=tid_value,
-                user_id=actual_user_id
+                subid=subid, status="sale", payout=sum_value,
+                tid=tid_value, user_id=actual_user_id
             ) if subid else None,
         )
 
         chatterfy_result = postback_results.get('chatterfy')
         keitaro_result = postback_results.get('keitaro')
 
-        # ========================================
-        # Формируем ответ (формат идентичен v2.1)
-        # ========================================
         return {
             "status": "ok",
             "user_id": actual_user_id,
             "action": "dep",
             "sum": sum_value,
             "commission": commission_value,
+            "promo": promo,                                                       # <-- promo in response
             "tid": tid_value,
             "user_created": user_created,
             "trader_id_updated": trader_id_update_info.get("updated", False),
@@ -820,38 +755,24 @@ async def dep_postback(
             "total_deposits_sum": total_deposits_sum,
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
-                "subid": subid,
-                "status_sent": "sale",
-                "payout": sum_value,
-                "tid": tid_value,
+                "subid": subid, "status_sent": "sale",
+                "payout": sum_value, "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
             } if subid else "skipped - no subid",
             "chatterfy_postback": {
                 "sent": chatterfy_result.get("ok") if chatterfy_result else False,
-                "clickid": user_clickid,
-                "event": "sumdep",
-                "sumdep": total_deposits_sum,
-                "previous_dep": sum_value,
+                "clickid": user_clickid, "event": "sumdep",
+                "sumdep": total_deposits_sum, "previous_dep": sum_value,
                 "url": chatterfy_result.get("full_url") if chatterfy_result else None
             } if user_clickid else "skipped - no clickid"
         }
 
     except Exception as e:
-        print(f"[POSTBACK DEP] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
-
-        if ENABLE_TELEGRAM_LOGS:
-            await send_error_log(
-                error_type="POSTBACK_DEP_EXCEPTION",
-                error_message=f"Необработанная ошибка в DEP постбэке: {str(e)}",
-                user_id=id,
-                additional_info={"action": "dep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id,
-                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/dep"},
-                full_traceback=True
-            )
-
+        await slog.error("POSTBACK", "DEP_EXCEPTION", f"Exception в DEP: {e}",
+                        user_id=id, endpoint="/postback/dep", include_traceback=True)
         return {"status": "error", "error": str(e)}
 
 
@@ -861,45 +782,33 @@ async def redep_postback(
     sum: str = Query(None, description="Redeposit amount (default: 59)"),
     commission: str = Query(None, description="Commission amount"),
     clickid: str = Query(None, description="Click ID from Chatterfry tracker"),
-    subscriber_id: str = Query(
-        None, description="UUID subscriber ID (for backward compatibility)"),
-    trader_id: str = Query(
-        None, description="Trader ID (for search and update)")
+    subscriber_id: str = Query(None, description="UUID subscriber ID (for backward compatibility)"),
+    trader_id: str = Query(None, description="Trader ID (for search and update)"),
+    promo: str = Query(None, description="Promo code (optional)"),       # <-- NEW v2.6
 ):
     """
     Редепозит пользователя (повторный депозит)
-    Отправляет событие DEP в Keitaro и постбэк в Chatterfy с суммой депозитов (event: pb_redep)
-
-    ВАЖНО: trader_id обновляется если передан (юзер мог зарегать новый аккаунт)
-    
-    v2.2: Chatterfy REDEP + Keitaro DEP отправляются параллельно
-    v2.4.1: id принимается как str (Pocket Option шлёт id= пустым)
+    v2.6: + promo field + service logging
     """
-    # v2.4.1: Парсим id из строки (Pocket Option шлёт id= пустым)
-    id = parse_id_parameter(id)
+    from service_logger import slog
 
-    # Санитизация идентификаторов - фильтруем плейсхолдеры
+    id = parse_id_parameter(id)
     trader_id = sanitize_identifier(trader_id, "trader_id")
     clickid = sanitize_identifier(clickid, "clickid")
     subscriber_id = sanitize_identifier(subscriber_id, "subscriber_id")
+    promo = sanitize_identifier(promo, "promo") if promo else None       # <-- NEW v2.6
 
     sum_value = parse_sum_parameter(sum)
     commission_value = parse_commission_parameter(commission)
 
-    print(
-        f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}")
-    print(
-        f"[POSTBACK REDEP] sum_raw: {sum!r}, sum_parsed: {sum_value}, commission_raw: {commission!r}, commission_parsed: {commission_value}")
+    print(f"[POSTBACK REDEP] id: {id}, subscriber_id: {subscriber_id}, clickid: {clickid}, trader_id: {trader_id}, promo: {promo}")
 
     if not id and not subscriber_id and not clickid and not trader_id:
-        return {"status": "error", "error": "At least one identifier required: 'id', 'subscriber_id', 'clickid', or 'trader_id'"}
+        return {"status": "error", "error": "At least one identifier required"}
 
     try:
         actual_user_id = await find_user_for_deposit(
-            user_id=id,
-            subscriber_id=subscriber_id,
-            clickid=clickid,
-            trader_id=trader_id
+            user_id=id, subscriber_id=subscriber_id, clickid=clickid, trader_id=trader_id
         )
 
         user_created = False
@@ -907,44 +816,32 @@ async def redep_postback(
 
         if not actual_user_id and id:
             user_result = await ensure_user_and_update_clickid(
-                user_id=id,
-                subscriber_id=subscriber_id,
-                trader_id=trader_id,
-                clickid=clickid
+                user_id=id, subscriber_id=subscriber_id, trader_id=trader_id, clickid=clickid
             )
             if user_result.get("success"):
                 actual_user_id = id
                 user_created = user_result.get("created", False)
-                print(f"[POSTBACK REDEP] ✓ Создан новый пользователь {id}")
 
         if not actual_user_id:
-            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}, clickid={clickid}, trader_id={trader_id}"
-            print(f"[POSTBACK REDEP] ✗ {error_msg}")
+            error_msg = f"User not found: id={id}, subscriber_id={subscriber_id}"
+            await slog.warning("POSTBACK", "REDEP_USER_NOT_FOUND", error_msg)
             return {"status": "error", "error": error_msg}
 
-        print(f"[POSTBACK REDEP] Найден пользователь: {actual_user_id}")
-
-        # Обновляем clickid если передан
         if clickid:
             db.update_user_clickid(actual_user_id, clickid)
 
-        # ВАЖНО: Обновляем trader_id если передан (юзер мог зарегать новый аккаунт)
+        # NEW v2.6: Обновляем promo если передан
+        if promo:
+            db.update_user_promo(actual_user_id, promo)
+
         if trader_id and not user_created:
             trader_id_update_info = await update_trader_id_if_needed(actual_user_id, trader_id)
 
         if db.check_duplicate_transaction(actual_user_id, "redep", sum_amount=sum_value, time_window_seconds=60):
-            print(
-                f"[POSTBACK REDEP] ⚠️ Дубликат транзакции для user {actual_user_id}, пропускаем")
-            return {
-                "status": "duplicate",
-                "user_id": actual_user_id,
-                "message": "Transaction already processed within last 60 seconds"
-            }
+            return {"status": "duplicate", "user_id": actual_user_id, "message": "Transaction already processed within last 60 seconds"}
 
         previous_deposits = db.get_user_deposits_count(actual_user_id)
         tid_value = 6 + previous_deposits
-        print(
-            f"[POSTBACK REDEP] Предыдущих депозитов: {previous_deposits}, tid будет: {tid_value}")
 
         result = db.process_postback(
             user_id=actual_user_id,
@@ -952,91 +849,47 @@ async def redep_postback(
             sum_amount=sum_value,
             commission=commission_value,
             raw_data={
-                "id": id,
-                "subscriber_id": subscriber_id,
-                "clickid": clickid,
-                "trader_id": trader_id,
-                "action": "redep",
-                "sum": sum_value,
-                "commission": commission_value,
-                "tid": tid_value,
-                "user_created": user_created,
+                "id": id, "subscriber_id": subscriber_id, "clickid": clickid,
+                "trader_id": trader_id, "promo": promo,                          # <-- promo
+                "action": "redep", "sum": sum_value, "commission": commission_value,
+                "tid": tid_value, "user_created": user_created,
                 "trader_id_updated": trader_id_update_info.get("updated", False),
-                "old_trader_id": trader_id_update_info.get("old_trader_id")
             }
         )
 
         if not result.get("success"):
             error_msg = result.get('error', 'Unknown error')
-            print(f"[POSTBACK REDEP] ✗ Ошибка записи в БД: {error_msg}")
-
-            if ENABLE_TELEGRAM_LOGS and "not found" not in error_msg.lower():
-                await send_error_log(
-                    error_type="POSTBACK_DB_ERROR",
-                    error_message=f"Ошибка записи REDEP в БД: {error_msg}",
-                    user_id=actual_user_id,
-                    additional_info={"action": "redep", "sum": sum_value, "commission": commission_value,
-                                     "tid": tid_value, "clickid": clickid, "endpoint": "/postback/redep"},
-                    full_traceback=True
-                )
-
+            await slog.log_postback_event("redep", actual_user_id, False, "/postback/redep", error_msg=error_msg)
             return {"status": "error", "error": error_msg}
 
-        print(
-            f"[POSTBACK REDEP] ✓ Записано в БД для user {actual_user_id}, sum={sum_value}, commission={commission_value}")
+        await slog.log_postback_event("redep", actual_user_id, True, "/postback/redep",
+                                      extra={"sum": sum_value, "tid": tid_value, "promo": promo})
 
         subid = db.get_user_sub_id(actual_user_id)
         user_clickid = db.get_user_clickid(actual_user_id)
         total_deposits_sum = db.get_user_total_deposits_sum(actual_user_id)
-        print(
-            f"[POSTBACK REDEP] Общая сумма депозитов после записи: {total_deposits_sum}")
-
-        # ========================================
-        # Параллельная отправка постбэков (v2.2)
-        # ========================================
-        if user_clickid:
-            print(
-                f"[POSTBACK REDEP] Отправляем постбэк в Chatterfy: clickid={user_clickid}, sumdep={total_deposits_sum}, previous_dep={sum_value}, event=pb_redep")
-        else:
-            print(
-                f"[POSTBACK REDEP] ⚠️ clickid_chatterfry не найден для user {actual_user_id}, постбэк в Chatterfy не отправлен")
-
-        if subid:
-            print(
-                f"[POSTBACK REDEP] Отправляем постбэк DEP в Keitaro для subid: {subid}, payout: {sum_value}, tid: {tid_value}")
-        else:
-            print(
-                f"[POSTBACK REDEP] ⚠️ sub_id не найден для user {actual_user_id}, постбэк в Keitaro не отправлен")
 
         postback_results = await send_postbacks_parallel(
             chatterfy=send_chatterfy_postback(
-                clickid=user_clickid,
-                sumdep=total_deposits_sum,
-                previous_dep=sum_value,
-                is_redep=True,  # REDEP использует event "pb_redep"
-                user_id=actual_user_id
+                clickid=user_clickid, sumdep=total_deposits_sum,
+                previous_dep=sum_value, is_redep=True, user_id=actual_user_id
             ) if user_clickid else None,
             keitaro=send_keitaro_postback(
-                subid=subid,
-                status="dep",
-                payout=sum_value,
-                tid=tid_value,
-                user_id=actual_user_id
+                subid=subid, status="dep", payout=sum_value,
+                tid=tid_value, user_id=actual_user_id
             ) if subid else None,
         )
 
         chatterfy_result = postback_results.get('chatterfy')
         keitaro_result = postback_results.get('keitaro')
 
-        # ========================================
-        # Формируем ответ (формат идентичен v2.1)
-        # ========================================
         return {
             "status": "ok",
             "user_id": actual_user_id,
             "action": "redep",
             "sum": sum_value,
             "commission": commission_value,
+            "promo": promo,                                                       # <-- promo
             "tid": tid_value,
             "user_created": user_created,
             "trader_id_updated": trader_id_update_info.get("updated", False),
@@ -1046,39 +899,26 @@ async def redep_postback(
             "total_deposits_sum": total_deposits_sum,
             "keitaro_postback": {
                 "sent": keitaro_result.get("ok"),
-                "subid": subid,
-                "status_sent": "dep",
-                "payout": sum_value,
-                "tid": tid_value,
+                "subid": subid, "status_sent": "dep",
+                "payout": sum_value, "tid": tid_value,
                 "url": keitaro_result.get("full_url"),
                 "response": keitaro_result.get("text")[:100] if keitaro_result.get("text") else None
             } if subid else "skipped - no subid",
             "chatterfy_postback": {
                 "sent": chatterfy_result.get("ok") if chatterfy_result else False,
-                "clickid": user_clickid,
-                "event": "pb_redep",
-                "sumdep": total_deposits_sum,
-                "previous_dep": sum_value,
+                "clickid": user_clickid, "event": "pb_redep",
+                "sumdep": total_deposits_sum, "previous_dep": sum_value,
                 "url": chatterfy_result.get("full_url") if chatterfy_result else None
             } if user_clickid else "skipped - no clickid"
         }
 
     except Exception as e:
-        print(f"[POSTBACK REDEP] ✗ Exception: {e}")
         import traceback
         traceback.print_exc()
-
-        if ENABLE_TELEGRAM_LOGS:
-            await send_error_log(
-                error_type="POSTBACK_REDEP_EXCEPTION",
-                error_message=f"Необработанная ошибка в REDEP постбэке: {str(e)}",
-                user_id=id,
-                additional_info={"action": "redep", "sum": sum, "commission": commission, "subscriber_id": subscriber_id,
-                                 "clickid": clickid, "trader_id": trader_id, "endpoint": "/postback/redep"},
-                full_traceback=True
-            )
-
+        await slog.error("POSTBACK", "REDEP_EXCEPTION", f"Exception в REDEP: {e}",
+                        user_id=id, endpoint="/postback/redep", include_traceback=True)
         return {"status": "error", "error": str(e)}
+
 
 
 @router.get("/withdraw")
