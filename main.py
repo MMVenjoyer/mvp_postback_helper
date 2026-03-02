@@ -163,31 +163,7 @@ async def root():
     }
 
 
-@app.get("/health", tags=["main"])
-async def health_check():
-    """
-    Проверка здоровья сервиса
-    """
-    try:
-        db = DataBase()
-        stats = db.get_detailed_users_stats()
-        calc_stats = db.get_calc_open_stats()
 
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "connection_type": "pooled",
-            "telegram_logs": "enabled" if ENABLE_TELEGRAM_LOGS else "disabled",
-            "keitaro_healthy": keitaro_monitor.is_healthy,
-            "stats": stats,
-            "calc_stats": calc_stats
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "database": "error",
-            "error": str(e)
-        }
 
 
 if __name__ == "__main__":
