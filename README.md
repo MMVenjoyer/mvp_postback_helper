@@ -369,19 +369,6 @@ curl "https://tylerwhite.icu/postback/test/123456789"
 ```bash
 curl "https://tylerwhite.icu/postback/lookup?subscriber_id=1cd38701-7e6e-4ce7-8161-9ce3011a0cfb"
 ```
-
-### Посмотреть статистику
-
-```bash
-curl "https://tylerwhite.icu/postback/stats"
-```
-
-### Проверить здоровье сервиса
-
-```bash
-curl "https://tylerwhite.icu/health"
-```
-
 ---
 
 ## ⚠️ Важные замечания
